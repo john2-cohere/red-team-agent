@@ -159,6 +159,18 @@ class CustomAgent(Agent):
             ),
             state=self.state.message_manager_state,
         )
+        # REGISTER CODE HERE
+        async def on_request(request):
+            logger.info("Request >>>>>>>>> : {request}".format(request=request))
+            # messages=[{
+            #     "role": "user",
+            #     "content": "Are there any potential vulnerabilities in this request:\n{request}".format(request),
+            # }]
+            # res = self.llm.invoke(messages)
+            # print(res)
+
+        logger.info(">>>>>> Registering on_request and on_response handlers")
+        self.browser_context.register_on_request_handler(on_request)
 
     def _log_response(self, response: CustomAgentOutput) -> None:
         """Log the model's response"""
