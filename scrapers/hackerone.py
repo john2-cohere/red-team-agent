@@ -234,10 +234,11 @@ async def scrape_reports(start_index=0):
         disable_security=True,
         extra_chromium_args=[
             "--window-size=1920,1080",
-        ]
+        ],
+        proxy_server="http://3.146.217.192:3128",
+        _force_keep_browser_alive=True
     )
     browser = Browser(config=browser_config)
-    num_reports = 0
     try:
         # Create a new browser context with default config
         context = await browser.get_playwright_browser()
@@ -291,7 +292,7 @@ async def scrape_reports(start_index=0):
                     continue
 
         # Close the page after the loop
-        await page.close()
+        # await page.close()
 
         with open("errord_reports.txt", "w") as f:
             f.write("\n".join(errord_reports))
@@ -304,7 +305,7 @@ async def scrape_reports(start_index=0):
     finally:
         # Close the browser
         logger.info("Closing browser...")
-        await browser.close()
+        # await browser.close()
 
 async def main():
     """Main function to run the script"""
