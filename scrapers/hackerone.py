@@ -272,7 +272,7 @@ async def scrape_reports(start_index=0):
         extra_chromium_args=[
             "--window-size=1920,1080",
         ],
-        proxy_server="http://3.146.217.192:3128",
+        proxy_server="http://147.79.78.153:3128",
         _force_keep_browser_alive=True
     )
     browser = Browser(config=browser_config)
