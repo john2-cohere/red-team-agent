@@ -45,6 +45,8 @@ from langchain_core.messages import (
 )
 from browser_use.browser.views import BrowserState, BrowserStateHistory
 from browser_use.agent.prompts import PlannerPrompt
+from playwright.sync_api import Request, Response
+from dataclasses import dataclass
 
 from json_repair import repair_json
 from src.utils.agent_state import AgentState
@@ -52,10 +54,72 @@ from src.utils.agent_state import AgentState
 from .custom_message_manager import CustomMessageManager, CustomMessageManagerSettings
 from .custom_views import CustomAgentOutput, CustomAgentStepInfo, CustomAgentState
 
+import logging
+import os
+
+# Configure logging to write to both file and console
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create logs directory if it doesn't exist
+os.makedirs("logs", exist_ok=True)
+
+# File handler
+file_handler = logging.FileHandler("logs/custom_agent.log", encoding="utf-8")
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter("%(levelname)s: %(message)s")
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
 
 Context = TypeVar('Context')
 
+@dataclass
+class HTTPMessage:
+    """Encapsulates a request/response pair"""
+    request: Request
+    response: Optional[Response]
+
+    def __str__(self):
+        """String representation of HTTP message"""
+        req_str = f"[Request]: {self.request.method} {self.request.url}"
+        res_str = f"[Response]: {self.response.url}" if self.response else "No response"
+
+        return f"{req_str}\n{res_str}"
+
+class HTTPHandler:
+    def __init__(self):
+        self._messages = []
+        self._session_messages = []
+        self._request_queue = []
+        
+    async def handle_request(self, request: Request):
+        self._request_queue.append(request)
+
+    async def handle_response(self, response: Response):
+        req_match = response.request
+        self._request_queue.remove(req_match)
+        self._session_messages.append(
+            HTTPMessage(request=req_match, response=response)
+        )
+
+    def flush(self) -> List[HTTPMessage]:
+        """Called by agent to flush current messages and reset state"""
+        unmatched = [HTTPMessage(request=req, response=None) for req in self._request_queue]
+
+        session_msgs = self._session_messages
+        self._request_queue = []
+        self._session_messages = []
+        self._messages.extend(unmatched)    
+        self._messages.extend(session_msgs)
+
+        return session_msgs
 
 class CustomAgent(Agent):
     def __init__(
@@ -109,6 +173,11 @@ class CustomAgent(Agent):
             injected_agent_state: Optional[AgentState] = None,
             context: Context | None = None,
     ):
+        self.http_handler = HTTPHandler()
+        if browser_context:
+            browser_context.req_handler = self.http_handler.handle_request
+            browser_context.res_handler = self.http_handler.handle_response
+        
         super(CustomAgent, self).__init__(
             task=task,
             llm=llm,
@@ -149,7 +218,7 @@ class CustomAgent(Agent):
                 self.available_actions,
                 max_actions_per_step=self.settings.max_actions_per_step,
             ).get_system_message(),
-            settings=CustomMessageManagerSettings(
+             settings=CustomMessageManagerSettings(
                 max_input_tokens=self.settings.max_input_tokens,
                 include_attributes=self.settings.include_attributes,
                 message_context=self.settings.message_context,
@@ -159,18 +228,6 @@ class CustomAgent(Agent):
             ),
             state=self.state.message_manager_state,
         )
-        # REGISTER CODE HERE
-        async def on_request(request):
-            logger.info("Request >>>>>>>>> : {request}".format(request=request))
-            # messages=[{
-            #     "role": "user",
-            #     "content": "Are there any potential vulnerabilities in this request:\n{request}".format(request),
-            # }]
-            # res = self.llm.invoke(messages)
-            # print(res)
-
-        logger.info(">>>>>> Registering on_request and on_response handlers")
-        self.browser_context.register_on_request_handler(on_request)
 
     def _log_response(self, response: CustomAgentOutput) -> None:
         """Log the model's response"""
@@ -198,7 +255,7 @@ class CustomAgent(Agent):
         self.AgentOutput = CustomAgentOutput.type_with_custom_actions(self.ActionModel)
 
     def update_step_info(
-            self, model_output: CustomAgentOutput, step_info: CustomAgentStepInfo = None
+        self, model_output: CustomAgentOutput, step_info: CustomAgentStepInfo = None
     ):
         """
         update step info
@@ -328,6 +385,7 @@ class CustomAgent(Agent):
             input_messages = self.message_manager.get_messages()
             tokens = self._message_manager.state.history.current_tokens
 
+            logger.info(f"📨 Input messages: {len(input_messages )}")
             try:
                 model_output = await self.get_next_action(input_messages)
                 self.update_step_info(model_output, step_info)
@@ -349,13 +407,24 @@ class CustomAgent(Agent):
                 # model call failed, remove last state message from history
                 self.message_manager._remove_state_message_by_index(-1)
                 raise e
-
+ 
             result: list[ActionResult] = await self.multi_act(model_output.action)
-            for ret_ in result:
+            for ret_ in result: 
                 if ret_.extracted_content and "Extracted page" in ret_.extracted_content:
                     # record every extracted page
                     if ret_.extracted_content[:100] not in self.state.extracted_content:
                         self.state.extracted_content += ret_.extracted_content
+
+            # Agent: 
+            # add the response/requests results from executing action to 
+            # the agent state
+            # TODO: consider adding timeout here to wait for all responses to return
+            # TODO: alternatively, we can consider encapsulating res/req in promises, and adding belated pairs to
+            # future state
+            msgs = self.http_handler.flush()
+            for msg in msgs:
+                print(msg)
+
             self.state.last_result = result
             self.state.last_action = model_output.action
             if len(result) > 0 and result[-1].is_done:
