@@ -10,6 +10,13 @@
             "request": "launch",
             "module": "scrapers.hackerone",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: WebUI",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "webui.py",
+            "console": "integratedTerminal"
         }
     ]
 }

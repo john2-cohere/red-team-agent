@@ -32,7 +32,7 @@ class CustomAgentOutput(AgentOutput):
     """
 
     current_state: CustomAgentBrain
-
+ 
     @staticmethod
     def type_with_custom_actions(
             custom_actions: Type[ActionModel],
@@ -55,7 +55,7 @@ class CustomAgentState(BaseModel):
     agent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     n_steps: int = 1
     consecutive_failures: int = 0
-    last_result: Optional[List['ActionResult']] = None
+    last_result: Optional[List['ActionResult']] = Field(default_factory=list)
     history: AgentHistoryList = Field(default_factory=lambda: AgentHistoryList(history=[]))
     last_plan: Optional[str] = None
     paused: bool = False

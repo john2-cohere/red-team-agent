@@ -51,6 +51,11 @@ from dataclasses import dataclass
 from json_repair import repair_json
 from src.utils.agent_state import AgentState
 
+# Exceptions
+from google.api_core.exceptions import ResourceExhausted
+from openai import RateLimitError
+from pydantic import ValidationError
+
 from .custom_message_manager import CustomMessageManager, CustomMessageManagerSettings
 from .custom_views import CustomAgentOutput, CustomAgentStepInfo, CustomAgentState
 from .http_handler import HTTPMessage, HTTPRequest, HTTPResponse
@@ -441,7 +446,7 @@ class CustomAgent(Agent):
         state = None
         model_output = None
         result: list[ActionResult] = []
-        step_start_time = time.time()
+        step_start_time = time.time() 
         tokens = 0
 
         try:
@@ -452,16 +457,19 @@ class CustomAgent(Agent):
             # TODO: alternatively, we can consider encapsulating res/req in promises, and adding belated pairs to
             # future state
             msgs = self.http_handler.flush()
-            filtered_msgs = filter_http_messages(msgs)
+            filtered_msgs = msgs
+            # filtered_msgs = filter_http_messages(msgs)
             
+            logger.info(f">>>>>>>>>> {self.state.last_result}")
             state = await self.browser_context.get_state()
+            
             await self._raise_if_stopped_or_paused()
             self.message_manager.add_state_message(state, self.state.last_action, self.state.last_result, step_info, self.settings.use_vision)
 
             # TODO:
             # add the HTTP messages to messages
             pentest_prompt = get_pentest_message(state, self.state.last_action, self.state.last_result, step_info, filtered_msgs)
-            logger.info(f"[Pentest Prompt]: {pentest_prompt}")
+            logger.info(f"[Pentest Prompt]: {pentest_prompt.content}")
 
             if self.settings.planner_llm and self.state.n_steps % self.settings.planner_interval == 0:
                 await self._run_planner()
@@ -469,16 +477,16 @@ class CustomAgent(Agent):
             tokens = self._message_manager.state.history.current_tokens
 
             # logging
-            for i, msg in enumerate(input_messages):
-                logger.info(f"{i + 1}. [MESSAGE]")
-                if isinstance(msg.content, list): 
-                    content = ""
-                    for item in msg.content:
-                        if isinstance(item, dict) and "text" in item:
-                            content += item["text"]
-                    logger.info(content)
-                else:
-                    logger.info(msg.content)
+            # for i, msg in enumerate(input_messages):
+            #     logger.info(f"{i + 1}. [MESSAGE]")
+            #     if isinstance(msg.content, list): 
+            #         content = ""
+            #         for item in msg.content:
+            #             if isinstance(item, dict) and "text" in item:
+            #                 content += item["text"]
+            #         logger.info(content)
+            #     else:
+            #         logger.info(msg.content)
 
             logger.info(f"📨 Input messages: {len(input_messages )}")
             try:
@@ -504,7 +512,7 @@ class CustomAgent(Agent):
                 raise e
  
             result: list[ActionResult] = await self.multi_act(model_output.action)
-            for ret_ in result: 
+            for ret_ in result:
                 if ret_.extracted_content and "Extracted page" in ret_.extracted_content:
                     # record every extracted page
                     if ret_.extracted_content[:100] not in self.state.extracted_content:
@@ -521,18 +529,25 @@ class CustomAgent(Agent):
             self.state.consecutive_failures = 0
 
         except InterruptedError:
-            logger.debug('Agent paused')
+            logger.debug("Agent paused")
             self.state.last_result = [
                 ActionResult(
-                    error='The agent was paused - now continuing actions might need to be repeated',
+                    error="The agent was paused - now continuing actions might need to be repeated",
                     include_in_memory=True
                 )
             ]
             return
 
-        except Exception as e:
+        except (ValidationError, ValueError, RateLimitError, ResourceExhausted) as e:
             result = await self._handle_step_error(e)
             self.state.last_result = result
+
+        except Exception as e:
+            logger.error(f"Error in step {self.state.n_steps}: {e}")
+            logger.error(traceback.format_exc())
+            step_info.step_number = step_info.max_steps
+
+            raise e
 
         finally:
             step_end_time = time.time()
