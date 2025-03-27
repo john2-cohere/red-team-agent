@@ -95,6 +95,7 @@ class CustomMessageManager(MessageManager):
         ).get_user_message(use_vision)
         self._add_message_with_tokens(state_message)
 
+
     def _remove_state_message_by_index(self, remove_ind=-1) -> None:
         """Remove last state message from history"""
         i = len(self.state.history.messages) - 1

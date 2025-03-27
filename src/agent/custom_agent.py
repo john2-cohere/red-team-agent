@@ -53,6 +53,8 @@ from src.utils.agent_state import AgentState
 
 from .custom_message_manager import CustomMessageManager, CustomMessageManagerSettings
 from .custom_views import CustomAgentOutput, CustomAgentStepInfo, CustomAgentState
+from .http_handler import HTTPMessage, HTTPRequest, HTTPResponse
+from .pentest_prompts import get_pentest_message
 
 import logging
 import os
@@ -61,66 +63,136 @@ import os
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Create logs directory if it doesn't exist
-os.makedirs("logs", exist_ok=True)
-
-# File handler
-file_handler = logging.FileHandler("logs/custom_agent.log", encoding="utf-8")
-file_handler.setLevel(logging.INFO)
-file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
-
-# Console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_formatter = logging.Formatter("%(levelname)s: %(message)s")
-console_handler.setFormatter(console_formatter)
-logger.addHandler(console_handler)
-
 Context = TypeVar('Context')
 
-@dataclass
-class HTTPMessage:
-    """Encapsulates a request/response pair"""
-    request: Request
-    response: Optional[Response]
-
-    def __str__(self):
-        """String representation of HTTP message"""
-        req_str = f"[Request]: {self.request.method} {self.request.url}"
-        res_str = f"[Response]: {self.response.url}" if self.response else "No response"
-
-        return f"{req_str}\n{res_str}"
+DEFAULT_INCLUDE_MIME = ["html", "script", "xml", "flash", "other_text"]
+DEFAULT_INCLUDE_STATUS = ["2xx", "3xx", "4xx", "5xx"]
+MAX_PAYLOAD_SIZE = 4000
 
 class HTTPHandler:
     def __init__(self):
         self._messages = []
-        self._session_messages = []
+        # track messages at each agent step
+        self._step_messages = []
         self._request_queue = []
         
     async def handle_request(self, request: Request):
-        self._request_queue.append(request)
+        http_request = HTTPRequest(request)
+        self._request_queue.append(http_request)
 
     async def handle_response(self, response: Response):
-        req_match = response.request
-        self._request_queue.remove(req_match)
-        self._session_messages.append(
-            HTTPMessage(request=req_match, response=response)
+        if not response:
+            return
+        req_match = HTTPRequest(response.request)
+        http_response = HTTPResponse(response)
+        matching_request = next(
+            (req for req in self._request_queue if req._request == response.request),
+            None
+        )
+        if matching_request:
+            self._request_queue.remove(matching_request)
+
+        self._step_messages.append(
+            HTTPMessage(request=req_match, response=http_response)
         )
 
     def flush(self) -> List[HTTPMessage]:
         """Called by agent to flush current messages and reset state"""
         unmatched = [HTTPMessage(request=req, response=None) for req in self._request_queue]
 
-        session_msgs = self._session_messages
+        session_msgs = self._step_messages 
         self._request_queue = []
-        self._session_messages = []
+        self._step_messages = []
         self._messages.extend(unmatched)    
         self._messages.extend(session_msgs)
 
         return session_msgs
 
+# TODO: consider making this stateful so that we can track messages across steps
+def filter_http_messages(messages: List[HTTPMessage], 
+                         include_mime_types: List[str] = DEFAULT_INCLUDE_MIME,
+                         include_status_codes: List[str] = DEFAULT_INCLUDE_STATUS,
+                         max_payload_size: int = 4000) -> List[HTTPMessage]:
+    """
+    Filter HTTP messages based on specified criteria
+    
+    Args:
+        messages: List of HTTPMessage objects to filter
+        include_mime_types: List of MIME types to include (html, script, xml, flash, other_text, css, images, other_binary)
+        include_status_codes: List of status code ranges to include (2xx, 3xx, 4xx, 5xx)
+        max_payload_size: Maximum payload size in bytes (if None, no limit)
+        
+    Returns:
+        Filtered list of HTTPMessage objects
+    """
+    # Default values matching the screenshot
+    if include_mime_types is None:
+        include_mime_types = ["html", "script", "xml", "flash", "other_text"]
+    
+    if include_status_codes is None:
+        include_status_codes = ["2xx", "3xx", "4xx", "5xx"]
+    
+    # MIME type filters  
+    mime_filters = {
+        "html": lambda ct: "text/html" in ct,
+        "script": lambda ct: "javascript" in ct or "application/json" in ct,
+        "xml": lambda ct: "xml" in ct,
+        "flash": lambda ct: "application/x-shockwave-flash" in ct,
+        "other_text": lambda ct: "text/" in ct and not any(x in ct for x in ["html", "xml", "css"]),
+        "css": lambda ct: "text/css" in ct,
+        "images": lambda ct: "image/" in ct,
+        "other_binary": lambda ct: not any(x in ct for x in ["text/", "image/", "application/json", "application/javascript"])
+    }
+    
+    # Status code filters
+    status_filters = {
+        "2xx": lambda code: 200 <= code < 300,
+        "3xx": lambda code: 300 <= code < 400,
+        "4xx": lambda code: 400 <= code < 500,
+        "5xx": lambda code: 500 <= code < 600
+    }
+    
+    filtered_messages = []
+    
+    for msg in messages:
+        # Skip messages with no response
+        if not msg.response:
+            print(f"[FILTER] Excluding {msg.request.url} - No response")
+            continue
+            
+        content_type = msg.response.get_content_type()
+        payload_size = msg.response.get_response_size()
+        status_code = msg.response.status
+        
+        # Check MIME type filter
+        mime_match = False
+        for mime_type in include_mime_types:
+            if mime_type in mime_filters and mime_filters[mime_type](content_type):
+                mime_match = True
+                break
+                
+        if not mime_match:
+            print(f"[FILTER] Excluding {msg.request.url} - MIME type {content_type} not in allowed types")
+            continue
+            
+        # Check status code filter
+        status_match = False
+        for status_range in include_status_codes:
+            if status_range in status_filters and status_filters[status_range](status_code):
+                status_match = True
+                break
+                
+        if not status_match:
+            print(f"[FILTER] Excluding {msg.request.url} - Status code {status_code} not in allowed ranges")
+            continue
+            
+        # Check payload size filter if specified
+        if max_payload_size is not None and payload_size > max_payload_size:
+            print(f"[FILTER] Excluding {msg.request.url} - Payload size {payload_size} exceeds max {max_payload_size}")
+            continue
+            
+        filtered_messages.append(msg)
+    return filtered_messages
 class CustomAgent(Agent):
     def __init__(
             self,
@@ -373,17 +445,40 @@ class CustomAgent(Agent):
         tokens = 0
 
         try:
+            # Agent: 
+            # add the response/requests results from executing action to 
+            # the agent state
+            # TODO: consider adding timeout here to wait for all responses to return
+            # TODO: alternatively, we can consider encapsulating res/req in promises, and adding belated pairs to
+            # future state
+            msgs = self.http_handler.flush()
+            filtered_msgs = filter_http_messages(msgs)
+            
             state = await self.browser_context.get_state()
             await self._raise_if_stopped_or_paused()
+            self.message_manager.add_state_message(state, self.state.last_action, self.state.last_result, step_info, self.settings.use_vision)
 
-            self.message_manager.add_state_message(state, self.state.last_action, self.state.last_result, step_info,
-                                                   self.settings.use_vision)
+            # TODO:
+            # add the HTTP messages to messages
+            pentest_prompt = get_pentest_message(state, self.state.last_action, self.state.last_result, step_info, filtered_msgs)
+            logger.info(f"[Pentest Prompt]: {pentest_prompt}")
 
-            # Run planner at specified intervals if planner is configured
             if self.settings.planner_llm and self.state.n_steps % self.settings.planner_interval == 0:
                 await self._run_planner()
             input_messages = self.message_manager.get_messages()
             tokens = self._message_manager.state.history.current_tokens
+
+            # logging
+            for i, msg in enumerate(input_messages):
+                logger.info(f"{i + 1}. [MESSAGE]")
+                if isinstance(msg.content, list): 
+                    content = ""
+                    for item in msg.content:
+                        if isinstance(item, dict) and "text" in item:
+                            content += item["text"]
+                    logger.info(content)
+                else:
+                    logger.info(msg.content)
 
             logger.info(f"📨 Input messages: {len(input_messages )}")
             try:
@@ -414,16 +509,6 @@ class CustomAgent(Agent):
                     # record every extracted page
                     if ret_.extracted_content[:100] not in self.state.extracted_content:
                         self.state.extracted_content += ret_.extracted_content
-
-            # Agent: 
-            # add the response/requests results from executing action to 
-            # the agent state
-            # TODO: consider adding timeout here to wait for all responses to return
-            # TODO: alternatively, we can consider encapsulating res/req in promises, and adding belated pairs to
-            # future state
-            msgs = self.http_handler.flush()
-            for msg in msgs:
-                print(msg)
 
             self.state.last_result = result
             self.state.last_action = model_output.action

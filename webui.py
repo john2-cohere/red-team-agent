@@ -36,6 +36,8 @@ from src.utils.default_config_settings import default_config, load_config_from_f
     save_current_config, update_ui_from_config
 from src.utils.utils import update_model_dropdown, get_latest_files, capture_screenshot
 
+from logger import init_root_logger
+
 # Global variables for persistence
 _global_browser = None
 _global_browser_context = None
@@ -1129,6 +1131,8 @@ def create_ui(config, theme_name="Ocean"):
 
 
 def main():
+    init_root_logger()
+
     parser = argparse.ArgumentParser(description="Gradio UI for Browser Agent")
     parser.add_argument("--ip", type=str, default="127.0.0.1", help="IP address to bind to")
     parser.add_argument("--port", type=int, default=7788, help="Port to listen on")
@@ -1140,7 +1144,6 @@ def main():
 
     demo = create_ui(config_dict, theme_name=args.theme)
     demo.launch(server_name=args.ip, server_port=args.port)
-
-
+    
 if __name__ == '__main__':
     main()
