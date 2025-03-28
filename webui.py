@@ -460,7 +460,7 @@ async def run_custom_agent(
         errors = history.errors()
         model_actions = history.model_actions()
         model_thoughts = history.model_thoughts()
-
+ 
         trace_file = get_latest_files(save_trace_path)
 
         return final_result, errors, model_actions, model_thoughts, trace_file.get('.zip'), history_file
