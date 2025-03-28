@@ -2,7 +2,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 from playwright.sync_api import Request, Response
 
-
+# TODO: lots of redundant information in HTTP requests can do some hiding
+# header hiding and what-not
 class HTTPRequest:
     """Encapsulates a request object"""
     def __init__(self, request: Request):
@@ -18,7 +19,18 @@ class HTTPRequest:
 
     def __str__(self):
         """String representation of HTTP request"""
-        return f"[Request]: {self.method} {self.url}"
+        req_str = "[Request]: " + str(self.method) + " " + str(self.url) + "\n"
+        
+        if self._request.redirected_from:
+            req_str += "Redirected from: " + str(self._request.redirected_from.url) + "\n"
+        if self._request.redirected_to:
+            req_str += "Redirecting to: " + str(self._request.redirected_to.url) + "\n"
+        if self._request.frame.parent_frame:
+            req_str += "From iframe\n"
+
+        req_str += str(self._request.headers) + "\n"
+        req_str += str(self._request.post_data)
+        return req_str
     
 class HTTPResponse:
     def __init__(self, response: Response):
@@ -59,9 +71,28 @@ class HTTPResponse:
         # If content-length not available, could try to get actual body size
         return 0
 
-    def __str__(self):
+    # NOTE: response.body() can return eithejr sunc or asyunc depedning on context
+    # of the calllingj function
+    async def to_str(self):
         """String representation of HTTP response"""
-        return f"[Response]: {self.url}"
+        resp_str = "[Response]: " + str(self.url) + " " + str(self.status) + "\n"
+        
+        if self._response.frame.parent_frame:
+            resp_str += "From iframe\n"
+        resp_str += str(self._response.headers) + "\n"
+        
+        # Skip body for redirect responses (3xx)
+        if 300 <= self.status < 400:
+            resp_str += "[Redirect response - no body]"
+            return resp_str
+            
+        try:
+            resp_bytes = await self._response.body()
+            resp_str += str(resp_bytes)
+        except Exception as e:
+            resp_str += f"[Error getting response body: {str(e)}]"
+            
+        return resp_str
 
 @dataclass
 class HTTPMessage:
@@ -69,7 +100,8 @@ class HTTPMessage:
     request: HTTPRequest 
     response: Optional[HTTPResponse]
 
-    def __str__(self):
-        """String representation of HTTP message"""
-        return f"{str(self.request)}\n{str(self.response)}"
+    async def to_str(self):
+        req_str = str(self.request)
+        resp_str = await self.response.to_str() if self.response else ""
 
+        return f"{req_str}\n{resp_str}"

@@ -457,36 +457,38 @@ class CustomAgent(Agent):
             # TODO: alternatively, we can consider encapsulating res/req in promises, and adding belated pairs to
             # future state
             msgs = self.http_handler.flush()
-            filtered_msgs = msgs
-            # filtered_msgs = filter_http_messages(msgs)
+            filtered_msgs = filter_http_messages(msgs)
             
-            logger.info(f">>>>>>>>>> {self.state.last_result}")
             state = await self.browser_context.get_state()
+
+            pentest_prompt = await get_pentest_message(state, self.state.last_action, self.state.last_result, step_info, filtered_msgs)
+            if pentest_prompt.content[0]:
+                pentest_messages = self.llm.invoke([pentest_prompt])
+                pentest_analysis = pentest_messages.content
+            else:
+                pentest_analysis = ""
             
-            await self._raise_if_stopped_or_paused()
-            self.message_manager.add_state_message(state, self.state.last_action, self.state.last_result, step_info, self.settings.use_vision)
-
-            # TODO:
-            # add the HTTP messages to messages
-            pentest_prompt = get_pentest_message(state, self.state.last_action, self.state.last_result, step_info, filtered_msgs)
             logger.info(f"[Pentest Prompt]: {pentest_prompt.content}")
+            logger.info(f"[Pentest Analysis]: {pentest_analysis}")
 
+            await self._raise_if_stopped_or_paused()
+            self.message_manager.add_state_message(state, self.state.last_action, self.state.last_result, step_info, pentest_analysis, use_vision=self.settings.use_vision)
             if self.settings.planner_llm and self.state.n_steps % self.settings.planner_interval == 0:
                 await self._run_planner()
             input_messages = self.message_manager.get_messages()
             tokens = self._message_manager.state.history.current_tokens
 
             # logging
-            # for i, msg in enumerate(input_messages):
-            #     logger.info(f"{i + 1}. [MESSAGE]")
-            #     if isinstance(msg.content, list): 
-            #         content = ""
-            #         for item in msg.content:
-            #             if isinstance(item, dict) and "text" in item:
-            #                 content += item["text"]
-            #         logger.info(content)
-            #     else:
-            #         logger.info(msg.content)
+            for i, msg in enumerate(input_messages):
+                logger.info(f"{i + 1}. [MESSAGE]")
+                if isinstance(msg.content, list): 
+                    content = ""
+                    for item in msg.content:
+                        if isinstance(item, dict) and "text" in item:
+                            content += item["text"]
+                    logger.info(content)
+                else:
+                    logger.info(msg.content)
 
             logger.info(f"📨 Input messages: {len(input_messages )}")
             try:

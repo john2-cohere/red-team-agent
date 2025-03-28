@@ -79,9 +79,10 @@ class CustomMessageManager(MessageManager):
     def add_state_message(
             self,
             state: BrowserState,
-            actions: Optional[List[ActionModel]] = None,
-            result: Optional[List[ActionResult]] = None,
-            step_info: Optional[AgentStepInfo] = None,
+            actions: Optional[List[ActionModel]],
+            result: Optional[List[ActionResult]],
+            step_info: Optional[AgentStepInfo],
+            pentest_analysis: Optional[str],            
             use_vision=True,
     ) -> None:
         """Add browser state as human message"""
@@ -90,8 +91,9 @@ class CustomMessageManager(MessageManager):
             state,
             actions,
             result,
-            include_attributes=self.settings.include_attributes,
-            step_info=step_info,
+            self.settings.include_attributes,
+            step_info,
+            pentest_analysis
         ).get_user_message(use_vision)
         self._add_message_with_tokens(state_message)
 

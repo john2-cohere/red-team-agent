@@ -26,10 +26,11 @@ class CustomAgentMessagePrompt(AgentMessagePrompt):
     def __init__(
             self,
             state: BrowserState,
-            actions: Optional[List[ActionModel]] = None,
-            result: Optional[List[ActionResult]] = None,
-            include_attributes: list[str] = [],
-            step_info: Optional[CustomAgentStepInfo] = None,
+            actions: List[ActionModel],
+            result: List[ActionResult], 
+            include_attributes: list[str],
+            step_info: CustomAgentStepInfo,
+            pentest_analysis: str
     ):
         super(CustomAgentMessagePrompt, self).__init__(state=state,
                                                        result=result,
@@ -37,6 +38,7 @@ class CustomAgentMessagePrompt(AgentMessagePrompt):
                                                        step_info=step_info
                                                        )
         self.actions = actions
+        self.pentest_analysis = pentest_analysis
 
     def get_user_message(self, use_vision: bool = True) -> HumanMessage:
         if self.step_info:
@@ -78,7 +80,9 @@ class CustomAgentMessagePrompt(AgentMessagePrompt):
 4. Current url: {self.state.url}
 5. Available tabs:
 {self.state.tabs}
-6. Interactive elements:
+6. Pentest Analysis:
+{self.pentest_analysis}
+7. Interactive elements:
 {elements_text}
         """
 
