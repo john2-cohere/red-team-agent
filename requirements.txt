@@ -1,4 +1,4 @@
-git+git@github.com:JohnPeng47/browser-use.git
+git+https://github.com/JohnPeng47/browser-use.git
 pyperclip==1.9.0
 gradio==5.10.0
 json-repair
