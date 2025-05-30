@@ -14,7 +14,7 @@ fastapi
 asgi_lifespan
 aiosqlite
 alembic
-httpx==0.22.0
+httpx==0.27.2
 
 -e ./submodules/browser-use
 -e ./submodules/johnllm

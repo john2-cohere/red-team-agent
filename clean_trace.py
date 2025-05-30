@@ -8,7 +8,7 @@ def remove_screenshots(obj):
         return [remove_screenshots(item) for item in obj]
     else:
         return obj
-
+                
 def clean_trace_file(filepath):
     """Read JSON file, remove screenshots, and write back to same file"""
     # Read the JSON file

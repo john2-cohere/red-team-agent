@@ -62,8 +62,6 @@ DEFAULT_PER_REQUEST_TIMEOUT = 2.0     # seconds to wait for *each* unmatched req
 DEFAULT_SETTLE_TIMEOUT      = 1.0     # seconds of network “silence” after the *last* response
 POLL_INTERVAL               = 0.5    # how often we poll internal state
 
-MODEL_NAME = "gpt-4.1"
-
 class AgentObservations(str, Enum):
     SITE_STRUCTURE = "site_structure"
 
@@ -242,9 +240,10 @@ class CustomAgent(Agent):
             self,
             task: str,
             llm: LLMModel,
+            model_name: str = "command-a-03-2025",
             add_infos: str = "",
             # Optional parameters
-            browser: Browser | None = None,
+            browser: Browser | None = None, 
             browser_context: BrowserContext | None = None,
             controller: Controller[Context] | None = None,
             # Initial agent run parameters
@@ -326,6 +325,7 @@ class CustomAgent(Agent):
             injected_agent_state=None,
             context=context,
         )
+        self.model_name = model_name
         self.llm: LLMModel
         self.agent_name = agent_name
         self.close_browser = close_browser
@@ -344,8 +344,6 @@ class CustomAgent(Agent):
         
         # username = self.agent_client.username if self.agent_client else "default"
         username = self.agent_name if self.agent_name else "default"
-        
-        # TODO: probably not a good idea to use none global logging solution
         init_root_logger(username)
         self.observations = {title.value: "" for title in AgentObservations}
 
@@ -387,7 +385,7 @@ class CustomAgent(Agent):
         try:
             is_new_page = IsNewPage().invoke(
                 model=self.llm,
-                model_name=MODEL_NAME,
+                model_name=self.model_name,
                 prompt_args={
                     "new_page": new_page,
                     "old_page": old_page,
@@ -455,7 +453,7 @@ class CustomAgent(Agent):
         """Get next action from LLM based on current state"""
         ai_message: str = self.llm.invoke(
             input_messages, 
-            model_name=MODEL_NAME, 
+            model_name=self.model_name, 
             response_format=None
         )
         converted_msg = BaseMessage(
@@ -467,6 +465,7 @@ class CustomAgent(Agent):
         ai_content = ai_message.replace("```json", "").replace("```", "")
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
+
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
 
         if parsed is None:

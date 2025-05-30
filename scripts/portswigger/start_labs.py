@@ -79,7 +79,7 @@ class PortSwiggerLabRunner:
         self._headless = headless
         self._max_steps = max_agent_steps
 
-        # (vuln_name, lab_index) -> live-lab URL
+            # (vuln_name, lab_index) -> live-lab URL
         self._active_labs: Dict[Tuple[str, int], str] = {}
         self._poll_tasks: List[asyncio.Task] = []
 
@@ -258,5 +258,6 @@ if __name__ == "__main__":
     from .labs import GENERIC_SUBSET
     from .labs import SQLI_SUBSET_NO_STATE
     from .labs import SQLI_TEST
+    from .labs import SQLI_TEST_SINGLE
 
-    PortSwiggerLabRunner(GENERIC_SUBSET, poll_interval=15, headless=False).run()
+    PortSwiggerLabRunner(SQLI_TEST_SINGLE, poll_interval=15, headless=False).run()
