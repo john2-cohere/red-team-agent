@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from browser_use.agent.prompts import SystemPrompt, AgentMessagePrompt
 from browser_use.agent.views import ActionResult, ActionModel
-from browser_use.browser.views import BrowserState
+from browser_use.browser.views import BrowserStateSummary
 from langchain_core.messages import HumanMessage, SystemMessage
 from datetime import datetime
 import importlib
@@ -27,14 +27,14 @@ class CustomSystemPrompt(SystemPrompt):
 class CustomAgentMessagePrompt(AgentMessagePrompt):
     def __init__(
             self,
-            state: BrowserState,
+            browser_state_summary: BrowserStateSummary,
             actions: List[ActionModel],
             result: List[ActionResult], 
             include_attributes: list[str],
             http_msgs: List[HTTPMessage],
             step_info: Optional[CustomAgentStepInfo],
     ):
-        super(CustomAgentMessagePrompt, self).__init__(state=state,
+        super(CustomAgentMessagePrompt, self).__init__(browser_state_summary=browser_state_summary,
                                                        result=result,
                                                        include_attributes=include_attributes,
                                                        step_info=step_info)

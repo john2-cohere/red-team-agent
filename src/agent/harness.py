@@ -2,8 +2,8 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Type, Literal
 from pydantic import BaseModel
-from browser_use.browser.browser import Browser
-from browser_use.browser.context import BrowserContext, BrowserContextConfig
+from browser_use.browser.profile import BrowserProfile
+from browser_use.browser.session import BrowserSession
 
 from src.agent.custom_agent import CustomAgent   # or wherever your agent lives
 
@@ -22,85 +22,77 @@ class AgentLogin(BaseModel):
             raise ValueError("At least one of username or email must be provided")
         return values
     
-import asyncio
-import logging
-from typing import Any, Dict, List, Optional, Sequence, Type, Literal
-
-from browser_use.browser.browser import Browser
-from browser_use.browser.context import BrowserContext, BrowserContextConfig
-from pydantic import BaseModel
-
-from src.agent.custom_agent import CustomAgent  # adjust import to your tree
-
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-
+# TEST spawning multiple browsers
 class AgentHarness:
     """
-    Spawns and supervises multiple CustomAgent instances.
-
-    • If `browser` is supplied, a **new BrowserContext** is created for each agent
-      unless the agent’s config already specifies `browser_context`.
-    • Contexts created by the harness are tracked and closed by `kill_all()`.
-    """
+    Spawns and supervises multiple CustomAgent instances, each with its own BrowserSession.
+    """     
 
     def __init__(
         self,
+        browser_profile_template: BrowserProfile,
         agents_config: Sequence[Dict[str, Any]],
         agent_cls: Type[CustomAgent] = CustomAgent,
-        browser: Browser | None = None,
         common_kwargs: Optional[Dict[str, Any]] = None,
     ):
+        self.browser_profile_template = browser_profile_template
         self.agent_cls = agent_cls
         self.agents_cfg = list(agents_config or [])
-        self.browser = browser
         self.common_kwargs = common_kwargs or {}
 
         self._agents: List[CustomAgent] = []
         self._tasks: List[asyncio.Task] = []
-        self._contexts: List[BrowserContext] = []   # contexts we own
+        self.browser_sessions: List[BrowserSession] = []
         self._history: List[Dict] = []
+
+        # Determine if browsers should be closed when the harness is done.
+        self.close_browser_on_cleanup = self.common_kwargs.pop("close_browser", True)
 
     # ---------- public API -------------------------------------------------
 
     async def start_all(self, max_steps: int = 100):
         """
-        Build and launch every agent.  Returns the list of asyncio.Tasks.
+        Build and launch every agent, each with its own BrowserSession.
+        Returns the list of asyncio.Tasks.
         """
         logger.info("Spawning %d agents …", len(self.agents_cfg))
+        self._agents = []
+        self.browser_sessions = []
+        self._tasks = []
+        self._history = [] # Reset history for this run
 
-        for raw_cfg in self.agents_cfg:
-            cfg = {**self.common_kwargs, **raw_cfg}
+        for raw_cfg_item in self.agents_cfg:
+            # Prepare BrowserProfile for this specific agent's session
+            current_agent_profile = self.browser_profile_template.model_copy()
+            # The keep_alive on the profile tells the session whether to close the browser
+            # when that specific session.stop() is called.
+            # If close_browser_on_cleanup is True for the harness, we want the browser to die with the session.
+            current_agent_profile.keep_alive = not self.close_browser_on_cleanup
 
-            # 1. Ensure a BrowserContext is present
-            if "browser_context" not in cfg:
-                if not self.browser:
-                    raise RuntimeError(
-                        "AgentHarness needs either an explicit "
-                        "`browser_context` in each agent config or a global "
-                        "`browser` to create contexts from."
-                    )
+            # Create and start a new BrowserSession for this agent
+            session = BrowserSession(browser_profile=current_agent_profile)
+            await session.start()
+            self.browser_sessions.append(session)
 
-                # Per‑agent context config can be passed via `context_cfg`
-                ctx_cfg: BrowserContextConfig = cfg.pop(
-                    "context_cfg", BrowserContextConfig()
-                )
-                browser_context = await self.browser.new_context(config=ctx_cfg)
+            # Prepare agent configuration
+            # Start with common_kwargs, then override with agent-specific raw_cfg_item
+            agent_constructor_kwargs = {**self.common_kwargs, **raw_cfg_item}
+            
+            # Pass the dedicated browser_session to the agent
+            agent_constructor_kwargs['browser_session'] = session
 
-                self._contexts.append(browser_context)   # keep track
-                cfg["browser_context"] = browser_context
-                
-                if cfg.get("agent_client"):
-                    cfg["agent_client"].set_shutdown(self.kill_all)
+            # Remove keys that are now handled by BrowserProfile/BrowserSession
+            # and should not be passed directly to the Agent if it expects a browser_session.
+            # Example: if CustomAgent previously took 'browser_profile' or 'context_cfg'
+            agent_constructor_kwargs.pop('browser_profile', None)
+            agent_constructor_kwargs.pop('context_cfg', None) 
+            agent_constructor_kwargs.pop('browser', None) # Ensure no old browser object is passed
+            # Add any other keys that CustomAgent should not receive when a session is provided.
 
-            # so agent can kill browser
-            if self.browser:
-                cfg["browser"] = self.browser
-
-            # 2. Instantiate and launch the agent
-            agent = self.agent_cls(**cfg)
+            # Instantiate and launch the agent
+            # Assuming CustomAgent's __init__ is something like: (self, task, llm, browser_session, **other_kwargs)
+            # Adjust if your CustomAgent takes browser_session differently or has other required positional args.
+            agent = self.agent_cls(**agent_constructor_kwargs)
             self._agents.append(agent)
 
             task = asyncio.create_task(self._run_agent(agent, max_steps))
@@ -122,22 +114,36 @@ class AgentHarness:
         logger.warning("Kill‑switch activated: %s", reason)
 
         # Ask agents to shut down gracefully
-        await asyncio.gather(
-            *(agent.shutdown(reason) for agent in self._agents),
-            return_exceptions=True,
-        )
+        # If agent.shutdown is not async or doesn't exist, this needs adjustment.
+        # Assuming agent.shutdown exists and is a coroutine based on original code.
+        if self._agents:
+            await asyncio.gather(
+                *(agent.shutdown(reason) for agent in self._agents if hasattr(agent, 'shutdown')),
+                return_exceptions=True,
+            )
 
         # Cancel any lingering tasks
         for task in self._tasks:
             if not task.done():
                 task.cancel()
+        
+        # Wait for tasks to acknowledge cancellation (optional but good practice)
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
 
-        # Close contexts that *we* created
-        for ctx in self._contexts:
+        # Close BrowserSessions that *we* created
+        for session in self.browser_sessions:
             try:
-                await ctx.close()
+                if session and session.initialized: # Check if session exists and was started
+                    await session.stop() # session.stop() respects profile.keep_alive
             except Exception as e:
-                logger.debug("Context close failed: %s", e)
+                logger.debug("BrowserSession close failed: %s", e)
+        
+        # Clear lists
+        self._agents = []
+        self._tasks = []
+        self.browser_sessions = []
+        # self._history is typically kept until a new run, or cleared by start_all
 
     # ---------- helpers ----------------------------------------------------
 

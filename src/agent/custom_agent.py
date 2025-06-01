@@ -19,16 +19,13 @@ from browser_use.agent.views import (
 )
 from browser_use.agent.gif import create_history_gif
 from browser_use.browser.browser import Browser
+from browser_use.browser.profile import BrowserProfile
+from browser_use.browser.session import BrowserSession
 from browser_use.browser.context import BrowserContext
-from browser_use.controller.service import Controller
-from browser_use.telemetry.views import (
-    AgentEndTelemetryEvent,
-    AgentStepTelemetryEvent,
-)
+from browser_use.controller.service import Controller   
 from browser_use.utils import time_execution_async
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
-from browser_use.browser.views import BrowserState
 from playwright.sync_api import Request, Response
 
 from json_repair import repair_json
@@ -48,7 +45,7 @@ from .custom_views import CustomAgentOutput
 from .custom_message_manager import CustomMessageManager, CustomMessageManagerSettings
 from .custom_views import CustomAgentStepInfo, CustomAgentState
 from .http_history import HTTPHistory, BAN_LIST
-from .logger import AgentLogger
+from .logger import AgentLogger 
 
 logger = getLogger(__name__)
 
@@ -234,71 +231,77 @@ class HTTPHandler:
         logger.info("Returning %d messages from flush", len(session_msgs))
         return session_msgs
 
-
+# REFACTORED CHANGES:
+# - not using customg agent output and falling back to default defined in Agent
+# - removed state update w.e this does
+# - need add error-handling in step()
 class CustomAgent(Agent):
     def __init__(
-            self,
-            task: str,
-            llm: LLMModel,
-            model_name: str = "command-a-03-2025",
-            add_infos: str = "",
-            # Optional parameters
-            browser: Browser | None = None, 
-            browser_context: BrowserContext | None = None,
-            controller: Controller[Context] | None = None,
-            # Initial agent run parameters
-            sensitive_data: Optional[Dict[str, str]] = None,
-            initial_actions: Optional[List[Dict[str, Dict[str, Any]]]] = None,
-            # Cloud Callbacks
-            register_new_step_callback: Callable[['BrowserState', 'AgentOutput', int], Awaitable[None]] | None = None,
-            register_done_callback: Callable[['AgentHistoryList'], Awaitable[None]] | None = None,
-            register_external_agent_status_raise_error_callback: Callable[[], Awaitable[bool]] | None = None,
-            # Agent settings
-            use_vision: bool = True,
-            use_vision_for_planner: bool = False,
-            save_conversation_path: Optional[str] = None,
-            save_conversation_path_encoding: Optional[str] = 'utf-8',
-            max_failures: int = 3,
-            retry_delay: int = 10,
-            system_prompt_class: Type[SystemPrompt] = SystemPrompt,
-            agent_prompt_class: Type[AgentMessagePrompt] = AgentMessagePrompt,
-            max_input_tokens: int = 128000,
-            validate_output: bool = False,
-            message_context: Optional[str] = None,
-            generate_gif: bool | str = False,
-            available_file_paths: Optional[list[str]] = None,
-            include_attributes: list[str] = [
-                'title',
-                'type',
-                'name',
-                'role',
-                'aria-label',
-                'placeholder',
-                'value',
-                'alt',
-                'aria-expanded',
-                'data-date-format',
-            ],
-            max_actions_per_step: int = 10,
-            tool_calling_method: Optional[ToolCallingMethod] = 'auto',
-            page_extraction_llm: Optional[BaseChatModel] = None,
-            planner_llm: Optional[BaseChatModel] = None,
-            planner_interval: int = 1,  # Run planner every N steps
-            # Inject state
-            injected_agent_state: Optional[AgentState] = None,
-            context: Context | None = None,
-            history_file: Optional[str] = None,
-            agent_client: Optional[AgentClient] = None,
-            app_id: Optional[str] = None,
-            close_browser: bool = False,
-            agent_name: str = ""
+        self,
+        task: str,
+        llm: LLMModel,
+        model_name: str = "command-a-03-2025",
+        add_infos: str = "",
+        # Optional parameters
+		browser: Browser | None = None,
+		browser_context: BrowserContext | None = None,
+		browser_profile: BrowserProfile | None = None,
+		browser_session: BrowserSession | None = None,
+		controller: Controller[Context] = Controller(),
+        # Initial agent run parameters
+        sensitive_data: Optional[Dict[str, str]] = None,
+        initial_actions: Optional[List[Dict[str, Dict[str, Any]]]] = None,
+        # Cloud Callbacks
+        register_new_step_callback: Callable[['BrowserState', 'AgentOutput', int], Awaitable[None]] | None = None,
+        register_done_callback: Callable[['AgentHistoryList'], Awaitable[None]] | None = None,
+        register_external_agent_status_raise_error_callback: Callable[[], Awaitable[bool]] | None = None,
+        # Agent settings
+        use_vision: bool = True,
+        use_vision_for_planner: bool = False,
+        save_conversation_path: Optional[str] = None,
+        save_conversation_path_encoding: Optional[str] = 'utf-8',
+        max_failures: int = 3,
+        retry_delay: int = 10,
+        system_prompt_class: Type[SystemPrompt] = SystemPrompt,
+        agent_prompt_class: Type[AgentMessagePrompt] = AgentMessagePrompt,
+        max_input_tokens: int = 128000,
+        validate_output: bool = False,
+        message_context: Optional[str] = None,
+        generate_gif: bool | str = False,
+        available_file_paths: Optional[list[str]] = None,
+        include_attributes: list[str] = [
+            'title',
+            'type',
+            'name',
+            'role',
+            'aria-label',
+            'placeholder',
+            'value',
+            'alt',
+            'aria-expanded',
+            'data-date-format',
+        ],
+        max_actions_per_step: int = 10,
+        tool_calling_method: Optional[ToolCallingMethod] = 'auto',
+        page_extraction_llm: Optional[BaseChatModel] = None,
+        planner_llm: Optional[BaseChatModel] = None,
+        planner_interval: int = 1,  # Run planner every N steps
+        # Inject state
+        injected_agent_state: Optional[AgentState] = None,
+        context: Context | None = None,
+        history_file: Optional[str] = None,
+        agent_client: Optional[AgentClient] = None,
+        app_id: Optional[str] = None,
+        close_browser: bool = False,
+        agent_name: str = ""
     ):
         super(CustomAgent, self).__init__(
             task=task,
             llm=llm,
             browser=browser,
             browser_context=browser_context,
-            controller=controller or Controller(),
+            browser_session=browser_session,
+            controller=controller,
             sensitive_data=sensitive_data,
             initial_actions=initial_actions,
             register_new_step_callback=register_new_step_callback,
@@ -310,7 +313,7 @@ class CustomAgent(Agent):
             save_conversation_path_encoding=save_conversation_path_encoding,
             max_failures=max_failures,
             retry_delay=retry_delay,
-            system_prompt_class=system_prompt_class,
+            # system_prompt_class=system_prompt_class,
             max_input_tokens=max_input_tokens,
             validate_output=validate_output,
             message_context=message_context,
@@ -326,7 +329,6 @@ class CustomAgent(Agent):
             context=context,
         )
         self.model_name = model_name
-        self.llm: LLMModel
         self.agent_name = agent_name
         self.close_browser = close_browser
         self.curr_page = None
@@ -357,10 +359,12 @@ class CustomAgent(Agent):
         self.add_infos = add_infos
         self._message_manager = CustomMessageManager(
             task=task,
-            system_message=self.settings.system_prompt_class(
-                self.available_actions,
-                max_actions_per_step=self.settings.max_actions_per_step,
-            ).get_system_message(),
+			system_message=SystemPrompt(
+				action_description=self.unfiltered_actions,
+				max_actions_per_step=self.settings.max_actions_per_step,
+				# override_system_message=override_system_message,
+				# extend_system_message=extend_system_message,
+			).get_system_message(),
              settings=CustomMessageManagerSettings(
                 max_input_tokens=self.settings.max_input_tokens,
                 include_attributes=self.settings.include_attributes,
@@ -409,8 +413,8 @@ class CustomAgent(Agent):
             emoji = "🤷"
 
         logger.info(f"{emoji} Eval: {response.current_state.evaluation_previous_goal}")
-        logger.info(f"🧠 New Memory: {response.current_state.important_contents}")
-        logger.info(f"🤔 Thought: {response.current_state.thought}")
+        # logger.info(f"🧠 New Memory: {response.current_state.important_contents}")
+        # logger.info(f"🤔 Thought: {response.current_state.thought}")
         logger.info(f"🎯 Next Goal: {response.current_state.next_goal}")
         for i, action in enumerate(response.action):
             logger.info(
@@ -421,12 +425,12 @@ class CustomAgent(Agent):
         for msg in http_msgs:
             logger.info(f"[Agent] {msg.request.url}")
 
-    def _setup_action_models(self) -> None:
-        """Setup dynamic action models from controller's registry"""
-        # Get the dynamic action model from controller's registry
-        self.ActionModel = self.controller.registry.create_action_model()
-        # Create output model with the dynamic actions
-        self.AgentOutput = CustomAgentOutput.type_with_custom_actions(self.ActionModel)
+    # def _setup_action_models(self) -> None:
+    #     """Setup dynamic action models from controller's registry"""
+    #     # Get the dynamic action model from controller's registry
+    #     self.ActionModel = self.controller.registry.create_action_model()
+    #     # Create output model with the dynamic actions
+    #     self.AgentOutput = CustomAgentOutput.type_with_custom_actions(self.ActionModel)
 
     def update_step_info(
         self, model_output: CustomAgentOutput, step_info: Optional[CustomAgentStepInfo] = None
@@ -451,20 +455,18 @@ class CustomAgent(Agent):
     @time_execution_async("--get_next_action")
     async def get_next_action(self, input_messages: List[BaseMessage]) -> CustomAgentOutput:
         """Get next action from LLM based on current state"""
-        ai_message: str = self.llm.invoke(
+        ai_message = self.llm.invoke(
             input_messages, 
-            model_name=self.model_name, 
-            response_format=None
+            # model_name=self.model_name, 
+            # response_format=None
         )
-        converted_msg = BaseMessage(
-            content=ai_message,
-            type="user"
-        )
-        self._message_manager._add_message_with_tokens(converted_msg)
+        # for tracking message history
+        self._message_manager._add_message_with_tokens(ai_message)
 
-        ai_content = ai_message.replace("```json", "").replace("```", "")
+        ai_content = ai_message.content.replace("```json", "").replace("```", "")
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
+        logger.info(f"[PARSED]: ", parsed_json)
 
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
 
@@ -532,7 +534,7 @@ class CustomAgent(Agent):
         curr_url: str = ""
 
         try:    
-            state = await self.browser_context.get_state()
+            state = await self.browser_session.get_state_summary(cache_clickable_elements_hashes=False)
             browser_actions = BrowserActions()
 
             await self._raise_if_stopped_or_paused()
@@ -547,15 +549,11 @@ class CustomAgent(Agent):
             input_messages = self._message_manager.get_messages()
             tokens = self._message_manager.state.history.current_tokens
             try:
-                # HACK
                 for msg in input_messages:
                     msg.type = ""
                 model_output = await self.get_next_action(input_messages)
 
-                # TODO: execute ancillary actions
-                # await self.execute_ancillary_actions(input_messages)
-                        
-                self.update_step_info(model_output, step_info)
+                # self.update_step_info(model_output, step_info)
                 self.state.n_steps += 1
                 await self._raise_if_stopped_or_paused()
             except Exception as e:
@@ -570,7 +568,7 @@ class CustomAgent(Agent):
             curr_page = state.element_tree.clickable_elements_to_string()
             # is_new_page = self._is_new_page(prev_page, curr_page)
 
-            curr_url = (await self.browser_context.get_current_page()).url
+            curr_url = (await self.browser_session.get_current_page()).url
             # logger.info(f"Curr_url:{curr_url}, prev_url: {prev_url}, is_new_page: {is_new_page}")
 
             prev_url = curr_url
@@ -580,13 +578,13 @@ class CustomAgent(Agent):
             self.step_http_msgs = self.http_history.filter_http_messages(http_msgs)
             browser_actions = BrowserActions(
                 actions=model_output.action,
-                thought=model_output.current_state.thought,
+                thought=model_output.current_state.memory,
                 goal=model_output.current_state.next_goal, 
             )
             if self.agent_client:
                 await self._update_server(self.step_http_msgs, browser_actions)
             
-            self._update_state(result, model_output, step_info)
+            # self._update_state(result, model_output, step_info)
             self._log_response(
                 self.step_http_msgs,
                 current_msg=input_messages[-1],
@@ -616,19 +614,6 @@ class CustomAgent(Agent):
 
         finally:
             step_end_time = time.time()
-            actions = [a.model_dump(exclude_unset=True) for a in model_output.action] if model_output else []
-            self.telemetry.capture(
-                AgentStepTelemetryEvent(
-                    agent_id=self.state.agent_id,
-                    step=self.state.n_steps,
-                    actions=actions,
-                    consecutive_failures=self.state.consecutive_failures,
-                    step_error=[r.error for r in result if r.error] if result else ['No result'],
-                )
-            )
-            if not result:
-                return
-
             if state:
                 metadata = StepMetadata(
                     step_number=self.state.n_steps,
@@ -695,38 +680,33 @@ class CustomAgent(Agent):
             return self.state.history
 
         finally:
-            self.telemetry.capture(
-                AgentEndTelemetryEvent(
-                    agent_id=self.state.agent_id,
-                    is_done=self.state.history.is_done(),
-                    success=self.state.history.is_successful(),
-                    steps=self.state.n_steps,
-                    max_steps_reached=self.state.n_steps >= max_steps,
-                    errors=self.state.history.errors(),
-                    total_input_tokens=self.state.history.total_input_tokens(),
-                    total_duration_seconds=self.state.history.total_duration_seconds(),
-                )
-            )
+            # self.telemetry.capture(
+            #     AgentEndTelemetryEvent(
+            #         agent_id=self.state.agent_id,
+            #         is_done=self.state.history.is_done(),
+            #         success=self.state.history.is_successful(),
+            #         steps=self.state.n_steps,
+            #         max_steps_reached=self.state.n_steps >= max_steps,
+            #         errors=self.state.history.errors(),
+            #         total_input_tokens=self.state.history.total_input_tokens(),
+            #         total_duration_seconds=self.state.history.total_duration_seconds(),
+            #     )
+            # )
 
-            try:
-                if not self.injected_browser_context or self.close_browser:
-                    logger.info("Closing browser context")
-                    await self.browser_context.close()
+            # POST DINNER: get HTTP MESSAGES working by manually starting a browser
+            # TODO: do we need this?
+            # try:
+            #     if self.close_browser:
+            #         logger.info("Closing browser context")
+            #         await self.browser_context.close()
 
-                if (not self.injected_browser and self.browser) or (self.close_browser and self.browser):
-                    logger.info("Closing browser")
-                    await self.browser.close()
-            except TargetClosedError as e:
-                pass
+            #     if self.browser or (self.close_browser and self.browser):
+            #         logger.info("Closing browser")
+            #         await self.browser.close()
+            # except TargetClosedError as e:
+            #     pass
 
-            if self.settings.generate_gif:
-                output_path: str = 'agent_history.gif'
-                if isinstance(self.settings.generate_gif, str):
-                    output_path = self.settings.generate_gif
-
-                create_history_gif(task=self.task, history=self.state.history, output_path=output_path)
-            
-            logger.info("Graceful exit!")
+            await self.shutdown()
 
     async def shutdown(self, reason: str = "Premature shutdown requested") -> None:
         """Shuts down the agent prematurely and performs cleanup."""
@@ -756,18 +736,18 @@ class CustomAgent(Agent):
             input_tokens = history.total_input_tokens() if history else 0
             duration_seconds = history.total_duration_seconds() if history else 0.0
 
-            self.telemetry.capture(
-                AgentEndTelemetryEvent(
-                    agent_id=agent_id,
-                    is_done=False, # Task was not completed normally
-                    success=False, # Assume failure on shutdown
-                    steps=steps,
-                    max_steps_reached=False,
-                    errors=errors,
-                    total_input_tokens=input_tokens,
-                    total_duration_seconds=duration_seconds,
-                )
-            )
+            # self.telemetry.capture(
+            #     AgentEndTelemetryEvent(
+            #         agent_id=agent_id,
+            #         is_done=False, # Task was not completed normally
+            #         success=False, # Assume failure on shutdown
+            #         steps=steps,
+            #         max_steps_reached=False,
+            #         errors=errors,
+            #         total_input_tokens=input_tokens,
+            #         total_duration_seconds=duration_seconds,
+            #     )
+            # )
 
             # Save History
             if self.history_file and history:
@@ -778,7 +758,7 @@ class CustomAgent(Agent):
                     logger.error(f"Failed to save history during shutdown: {e}")
 
             # Close Browser Context
-            if not self.injected_browser_context and self.browser_context:
+            if self.browser_context:
                 try:
                     await self.browser_context.close()
                     logger.info("Closed browser context during shutdown.")

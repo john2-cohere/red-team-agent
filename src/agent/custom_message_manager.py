@@ -5,7 +5,7 @@ from typing import List, Type, Optional
 
 from browser_use.agent.message_manager.service import MessageManager
 from browser_use.agent.views import ActionResult, ActionModel
-from browser_use.browser.views import BrowserState
+from browser_use.browser.views import BrowserStateSummary
 from browser_use.agent.message_manager.service import MessageManagerSettings
 from browser_use.agent.views import ActionResult, MessageManagerState
 from langchain_core.messages import (
@@ -70,11 +70,9 @@ class CustomMessageManager(MessageManager):
             self.state.history.remove_message(min_message_len)  # always remove the oldest message
             diff = self.state.history.current_tokens - self.settings.max_input_tokens
 
-    # AFTER DINNER:
-    # - wire up HTTP_msgs everywhere
     def add_state_message(
             self,
-            state: BrowserState,
+            state: BrowserStateSummary,
             actions: List[ActionModel],
             result: List[ActionResult],
             http_msgs: List[HTTPMessage],

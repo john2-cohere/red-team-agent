@@ -5,11 +5,17 @@ import sys
 import traceback
 from pathlib import Path
 from typing import Dict, List, Tuple
-
+import os
 import aiohttp
-from browser_use.browser.browser import Browser, BrowserConfig
+from playwright.async_api import Browser
+
+from browser_use.browser.browser import BrowserConfig
 from browser_use.browser.context import BrowserContextConfig
-from johnllm import LLMModel
+from browser_use.browser.profile import BrowserProfile
+# from johnllm import LLMModel
+
+
+from langchain_cohere import ChatCohere
 from logging import getLogger
 
 from src.agent.harness import AgentHarness
@@ -28,6 +34,7 @@ PORTSWIGGER_CREDS = {
 }
 PORTSWIGGER_URL = "https://portswigger.net"
 DATA_DIR_PATH = Path("tmp/profiles").resolve()
+API_KEY = os.getenv("COHERE_API_KEY")
 
 logger = getLogger(__name__)
 
@@ -143,7 +150,8 @@ class PortSwiggerLabRunner:
                 logger.error("Failed to capture lab URL for %s/#%s", vuln_category, lab_idx)
             return url
         except Exception:
-            logger.exception("Error starting %s/#%s", vuln_category, lab_idx)
+            logger.error(">>>> Error during runnning the agent: ")
+            traceback.print_exc(file=sys.stderr)
             return None
 
     async def _poll_lab(
@@ -171,7 +179,7 @@ class PortSwiggerLabRunner:
         """
         Launches a PortSwigger browser/LLM agent that:
         1. Navigates to the lab listing.
-        2. Clicks “Access the lab”.
+        2. Clicks "Access the lab".
         3. Logs in if redirected.
         4. Captures the redirected, unique lab URL.
         """
@@ -179,29 +187,24 @@ class PortSwiggerLabRunner:
             """Local subclass to avoid mypy/name-conflict warnings."""
 
         # Browser config.
-        llm = LLMModel()
+        llm = ChatCohere(model="command-a-03-2025", cohere_api_key=API_KEY)
         window_w, window_h = 1920, 1080
-        browser = Browser(
-            config=BrowserConfig(
-                headless=self._headless,
-                disable_security=True,
-                # user_data_dir=str(DATA_DIR_PATH / "browser"),
-                extra_chromium_args=[f"--window-size={window_w},{window_h}", "--incognito"],
-                # chrome_instance_path=(
-                #     r"C:\Users\jpeng\AppData\Local\ms-playwright\chromium-1161\chrome-win\chrome.exe"
-                # ),
-            )
+        # TODO: this needs to be playwright browser
+
+        browser_profile = BrowserProfile(
+            no_viewport=False,
+            headless=self._headless,
+            disable_security=True,
         )
 
         shared_cfg = {
             "llm": llm,
             "use_vision": False,
-            "tool_calling_method": "function_calling",
-            "system_prompt_class": CustomSystemPrompt,
+            # "tool_calling_method": "auto",
+            # "system_prompt_class": CustomSystemPrompt,
             "agent_prompt_class": CustomAgentMessagePrompt,
-            "controller": ObservationController(_LabURLObservation),
+            # "controller": ObservationController(_LabURLObservation),
             "app_id": None,
-            "context_cfg": BrowserContextConfig(no_viewport=False),
             "close_browser": True
         }
 
@@ -222,14 +225,13 @@ Once this is done, you can exit
         # agent_prompt = (
         #     "Navigate to the following URL:\n"
         #     f"{PORTSWIGGER_URL}{lab_href}\n\n"
-        #     "Click on “Access THE LAB”. If redirected to login, use these creds:\n"
+        #     "Click on "Access THE LAB". If redirected to login, use these creds:\n"
         #     f"{PORTSWIGGER_CREDS}\n\n"
         #     "After successful login, capture the redirected lab URL with "
         #     "`record_observation` and exit."
         # )
-
         harness = AgentHarness(
-            browser=browser,
+            browser_profile_template=browser_profile,
             agents_config=[{"task": agent_prompt, "agent_client": None}],
             common_kwargs=shared_cfg,
         )
@@ -252,7 +254,6 @@ Once this is done, you can exit
         finally:
             logger.error(">>>> Forcibly shutting down the agent: ")
             await harness.kill_all("Done")
-            await browser.close()
 
 if __name__ == "__main__":
     from .labs import GENERIC_SUBSET
