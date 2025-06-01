@@ -7,6 +7,8 @@ from browser_use.browser.session import BrowserSession
 
 from src.agent.custom_agent import CustomAgent   # or wherever your agent lives
 
+from .http_handler import HTTPHandler, BAN_LIST
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -60,8 +62,10 @@ class AgentHarness:
         self.browser_sessions = []
         self._tasks = []
         self._history = [] # Reset history for this run
-
+        
         for raw_cfg_item in self.agents_cfg:
+            http_handler = HTTPHandler(banlist=BAN_LIST)
+
             # Prepare BrowserProfile for this specific agent's session
             current_agent_profile = self.browser_profile_template.model_copy()
             # The keep_alive on the profile tells the session whether to close the browser
@@ -71,13 +75,18 @@ class AgentHarness:
 
             # Create and start a new BrowserSession for this agent
             session = BrowserSession(browser_profile=current_agent_profile)
+            session.http_request_handler = http_handler.handle_request
+            session.http_response_handler = http_handler.handle_response
+
             await session.start()
+
             self.browser_sessions.append(session)
 
             # Prepare agent configuration
             # Start with common_kwargs, then override with agent-specific raw_cfg_item
             agent_constructor_kwargs = {**self.common_kwargs, **raw_cfg_item}
-            
+            agent_constructor_kwargs['http_handler'] = http_handler
+
             # Pass the dedicated browser_session to the agent
             agent_constructor_kwargs['browser_session'] = session
 

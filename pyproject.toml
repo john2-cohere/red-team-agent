@@ -5,3 +5,92 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+
+[tool.pylint]
+# Pylint configuration for a highly permissive setup
+# This configuration disables most style and convention checks
+# while keeping important error and warning checks
+
+[tool.pylint.main]
+# Use multiple processes to speed up Pylint
+jobs = 0
+
+# Pickle collected data for later comparisons
+persistent = true
+
+# Minimum Python version to use for version dependent checks
+py-version = "3.8"
+
+# Discover python modules and packages in the file system subtree
+recursive = true
+
+[tool.pylint.messages_control]
+# Disable most restrictive checks while keeping important ones
+disable = [
+    # Convention (C) - Style and naming conventions
+    "missing-module-docstring",
+    "missing-class-docstring", 
+    "missing-function-docstring",
+    "invalid-name",
+    "line-too-long",
+    "too-few-public-methods",
+    "too-many-public-methods",
+    "too-many-arguments",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-instance-attributes",
+    "too-many-nested-blocks",
+    "consider-using-f-string",
+    "consider-using-with",
+    "consider-using-enumerate",
+    "consider-using-dict-comprehension",
+    "consider-using-set-comprehension",
+    "consider-using-generator",
+    "consider-using-in",
+    "consider-using-get",
+    "consider-using-assignment-expr",
+    "use-dict-literal",
+    "use-list-literal",
+    
+    # Refactoring (R) - Code structure suggestions
+    "duplicate-code",
+    "cyclomatic-complexity",
+    "consider-using-namedtuple-or-dataclass",
+    "consider-alternative-union-syntax",
+    "too-many-return-statements",
+    "inconsistent-return-statements",
+    "no-else-return",
+    "no-else-raise",
+    "no-else-break",
+    "no-else-continue",
+    
+    # Warning (W) - Less critical warnings
+    "unused-variable",
+    "unused-argument",
+    "unused-import",
+    "redefined-outer-name",
+    "global-statement",
+    "broad-except",
+    "bare-except",
+    "fixme",
+    "protected-access",
+    "attribute-defined-outside-init",
+    "arguments-differ",
+    "signature-differs",
+    "abstract-method",
+    "useless-super-delegation",
+    "super-init-not-called",
+    "non-parent-init-called",
+    "logging-not-lazy",
+    "logging-format-interpolation",
+    "logging-fstring-interpolation",
+    
+    # Informational (I)
+    "locally-disabled",
+    "file-ignored",
+    "suppressed-message",
+    "useless-suppression",
+    "deprecated-pragma",
+    "use-symbolic-message-instead"
+]

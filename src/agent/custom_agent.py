@@ -1,3 +1,4 @@
+
 import json
 import traceback
 from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, Type, TypeVar, Set, Deque
@@ -32,6 +33,8 @@ from json_repair import repair_json
 from src.utils.agent_state import AgentState
 from src.agent.client import AgentClient
 
+from eval.vuln_servers.client import EvalClient
+
 from johnllm import LLMModel, LMP
 from httplib import HTTPRequest, HTTPResponse, HTTPMessage
 
@@ -44,8 +47,8 @@ from common.agent import BrowserActions
 from .custom_views import CustomAgentOutput
 from .custom_message_manager import CustomMessageManager, CustomMessageManagerSettings
 from .custom_views import CustomAgentStepInfo, CustomAgentState
-from .http_history import HTTPHistory, BAN_LIST
-from .logger import AgentLogger 
+from .http_handler import HTTPHistory, HTTPHandler
+from .logger import AgentLogger
 
 logger = getLogger(__name__)
 
@@ -85,152 +88,6 @@ Now answer, has the page changed?
 """
     response_format = NewPage
 
-# TODO: LOGGING QUESTION:
-# TODO: really need to simplify logic here
-# how to handle logging in functions not defined as part of class
-class HTTPHandler:
-    def __init__(
-        self,
-        *,
-        banlist: List[str] | None = None,
-    ):
-        self._messages: List[HTTPMessage]      = []
-        self._step_messages: List[HTTPMessage] = []
-        self._request_queue: List[HTTPRequest] = []
-        self._req_start: Dict[HTTPRequest, float] = {}
-
-        # URL filter  ───────────────────────────────────────────────────────
-        # A simple substring-based ban list imported from a shared module.
-        self._ban_substrings: List[str] = banlist or BAN_LIST
-        self._ban_list: Set[str]        = set()   # concrete URLs flagged at run-time
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Helper
-    # ─────────────────────────────────────────────────────────────────────
-    def _is_banned(self, url: str) -> bool:
-        """Return True if the URL matches any ban-substring or was added at runtime."""
-        if url in self._ban_list:
-            return True
-        for s in self._ban_substrings:
-            if s in url:
-                self._ban_list.add(url)      # cache for fast positive lookup next time
-                return True
-        return False
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Browser-callback handlers
-    # ─────────────────────────────────────────────────────────────────────
-    async def handle_request(self, request: Request):
-        try:
-            http_request = HTTPRequest.from_pw(request)
-            url          = http_request.url
-
-            if self._is_banned(url):
-                logger.debug(f"Dropped banned URL: {url}")
-                return
-
-            self._request_queue.append(http_request)
-            self._req_start[http_request] = asyncio.get_running_loop().time()
-        except Exception as e:
-            logger.exception("Error handling request: %s", e)
-
-    async def handle_response(self, response: Response):
-        try:
-            if not response:
-                return
-
-            req_match      = HTTPRequest.from_pw(response.request)
-            http_response  = HTTPResponse.from_pw(response)
-
-            matching_request = next(
-                (req for req in self._request_queue
-                 if req.url == response.request.url and req.method == response.request.method),
-                None
-            )
-            if matching_request:
-                self._request_queue.remove(matching_request)
-                self._req_start.pop(matching_request, None)
-
-            self._step_messages.append(
-                HTTPMessage(request=req_match, response=http_response)
-            )
-        except Exception as e:
-            logger.exception("Error handling response: %s", e)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Flush logic with hard timeout
-    # ─────────────────────────────────────────────────────────────────────
-    async def flush(
-        self,
-        *,
-        per_request_timeout: float = DEFAULT_PER_REQUEST_TIMEOUT,
-        settle_timeout:      float = DEFAULT_SETTLE_TIMEOUT,
-        flush_timeout:       float = DEFAULT_FLUSH_TIMEOUT,
-    ) -> List["HTTPMessage"]:
-        """
-        Block until either:
-          • all outstanding requests are answered / timed out and the network
-            has been quiet for `settle_timeout` seconds, **or**
-          • `flush_timeout` seconds have elapsed in total.
-        """
-        logger.info("Starting HTTP flush")
-        loop        = asyncio.get_running_loop()
-        start_time  = loop.time()
-
-        last_seen_response_idx = len(self._step_messages)
-        last_response_time     = start_time
-
-        while True:
-            await asyncio.sleep(POLL_INTERVAL)
-            now = loop.time()
-
-            # 0️⃣  Hard timeout check
-            if now - start_time >= flush_timeout:
-                logger.warning(
-                    "Flush hit hard timeout of %.1f s; returning immediately", flush_timeout
-                )
-                break
-
-            # 1️⃣  Per-request time-outs
-            for req in list(self._request_queue):
-                started_at = self._req_start.get(req, now)
-                if now - started_at >= per_request_timeout:
-                    logger.info("Request timed out: %s", req.url)
-                    self._messages.append(HTTPMessage(request=req, response=None))
-                    self._request_queue.remove(req)
-                    self._req_start.pop(req, None)
-                else:
-                    logger.debug("[REQUEST STAY] %s stay: %.2f s", req.url, now - started_at)
-
-            # 2️⃣  Quiet-period tracking
-            if len(self._step_messages) != last_seen_response_idx:
-                last_seen_response_idx = len(self._step_messages)
-                last_response_time     = now
-
-            # 3️⃣  Exit conditions
-            queue_empty  = not self._request_queue
-            quiet_enough = (now - last_response_time) >= settle_timeout
-            if queue_empty and quiet_enough:
-                logger.info("Flush complete")
-                break
-
-        # ────────────────────────────────────────────────────────────────
-        # Finalise
-        # ────────────────────────────────────────────────────────────────
-        unmatched = [
-            HTTPMessage(request=req, response=None) for req in self._request_queue
-        ]
-        self._req_start.clear()
-
-        session_msgs        = self._step_messages
-        self._request_queue = []
-        self._step_messages = []
-        self._messages.extend(unmatched)
-        self._messages.extend(session_msgs)
-
-        logger.info("Returning %d messages from flush", len(session_msgs))
-        return session_msgs
-
 # REFACTORED CHANGES:
 # - not using customg agent output and falling back to default defined in Agent
 # - removed state update w.e this does
@@ -239,9 +96,10 @@ class CustomAgent(Agent):
     def __init__(
         self,
         task: str,
-        llm: LLMModel,
+        llm: BaseChatModel,
         model_name: str = "command-a-03-2025",
         add_infos: str = "",
+        http_handler: HTTPHandler = None,
         # Optional parameters
 		browser: Browser | None = None,
 		browser_context: BrowserContext | None = None,
@@ -291,10 +149,14 @@ class CustomAgent(Agent):
         context: Context | None = None,
         history_file: Optional[str] = None,
         agent_client: Optional[AgentClient] = None,
+        eval_client: Optional[EvalClient] = None,
         app_id: Optional[str] = None,
         close_browser: bool = False,
         agent_name: str = ""
     ):
+        if not http_handler:
+            raise Exception("Must initialize CustomAgent with HTTPHandler")
+
         super(CustomAgent, self).__init__(
             task=task,
             llm=llm,
@@ -328,16 +190,17 @@ class CustomAgent(Agent):
             injected_agent_state=None,
             context=context,
         )
+        self.http_handler = http_handler
         self.model_name = model_name
         self.agent_name = agent_name
         self.close_browser = close_browser
         self.curr_page = None
         self.history_file = history_file
-        self.http_handler = HTTPHandler()
         self.http_history = HTTPHistory()
         self.agent_client = agent_client
-        if self.agent_client:
-            self.agent_client.set_shutdown(self.shutdown)
+        self.eval_client = eval_client
+        if self.eval_client:
+            self.eval_client.set_shutdown(self.shutdown)
 
         self.app_id = app_id
         self.agent_id = None
@@ -348,12 +211,6 @@ class CustomAgent(Agent):
         username = self.agent_name if self.agent_name else "default"
         init_root_logger(username)
         self.observations = {title.value: "" for title in AgentObservations}
-
-        if browser_context:
-            logger.info("Registering HTTP handlers")
-            browser_context.req_handler = self.http_handler.handle_request
-            browser_context.res_handler = self.http_handler.handle_response
-            # browser_context.page_handler = self.handle_page
 
         self.state = CustomAgentState()
         self.add_infos = add_infos
@@ -583,6 +440,8 @@ class CustomAgent(Agent):
             )
             if self.agent_client:
                 await self._update_server(self.step_http_msgs, browser_actions)
+            if self.eval_client:
+                await self._update_eval(self.step_http_msgs, browser_actions)
             
             # self._update_state(result, model_output, step_info)
             self._log_response(
