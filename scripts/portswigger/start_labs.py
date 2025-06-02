@@ -48,6 +48,8 @@ class LabURLObservation(ObservationModel):
     def to_msg(self) -> str:
         return self.lab_url
 
+# TODO: seems to exit early when start_agent
+
 
 # ────────────────────────────────────────────
 # Main runner class

@@ -32,8 +32,9 @@ from playwright.sync_api import Request, Response
 from json_repair import repair_json
 from src.utils.agent_state import AgentState
 from src.agent.client import AgentClient
+from src.utils import retry_async, RetryError
 
-from eval.vuln_servers.client import EvalClient
+from eval.ctf_server.client import EvalClient
 
 from johnllm import LLMModel, LMP
 from httplib import HTTPRequest, HTTPResponse, HTTPMessage
@@ -309,6 +310,7 @@ class CustomAgent(Agent):
 
         logger.info(f"🧠 All Memory: \n{step_info.memory}")
 
+    @retry_async(max_retries=3, exceptions=(Exception))
     @time_execution_async("--get_next_action")
     async def get_next_action(self, input_messages: List[BaseMessage]) -> CustomAgentOutput:
         """Get next action from LLM based on current state"""
@@ -319,7 +321,6 @@ class CustomAgent(Agent):
         )
         # for tracking message history
         self._message_manager._add_message_with_tokens(ai_message)
-
         ai_content = ai_message.content.replace("```json", "").replace("```", "")
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
@@ -334,7 +335,7 @@ class CustomAgent(Agent):
         # cut the number of actions to max_actions_per_step if needed
         if len(parsed.action) > self.settings.max_actions_per_step:
             parsed.action = parsed.action[: self.settings.max_actions_per_step]
-        return parsed
+        return parsed   
     
     async def execute_ancillary_actions(self, input_messages: List[BaseMessage]):
         pass
@@ -378,7 +379,7 @@ class CustomAgent(Agent):
         self.state.consecutive_failures = 0
 
     @time_execution_async("--step")
-    async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> None:
+    async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> bool:
         """Execute one step of the task"""
         logger.info(f"Step {self.state.n_steps}")
         state = None
@@ -389,12 +390,14 @@ class CustomAgent(Agent):
         browser_actions: Optional[BrowserActions] = None
         curr_page: str = ""
         curr_url: str = ""
+        early_shutdown = False
 
         try:    
             state = await self.browser_session.get_state_summary(cache_clickable_elements_hashes=False)
             browser_actions = BrowserActions()
 
             await self._raise_if_stopped_or_paused()
+            
             self._message_manager.add_state_message(
                 state, 
                 self.state.last_action, 
@@ -415,7 +418,10 @@ class CustomAgent(Agent):
                 await self._raise_if_stopped_or_paused()
             except Exception as e:
                 # model call failed, remove last state message from history
-                self._message_manager._remove_state_message_by_index(-1)
+                # TODO: why does original browser-use do this ??
+                # self._message_manager._remove_state_message_by_index(-1)
+
+                logger.info(f"LLM Parsing failed, here is the failure message => {input_messages[-1]}")
                 raise e
  
             result: list[ActionResult] = await self.multi_act(model_output.action)
@@ -441,14 +447,16 @@ class CustomAgent(Agent):
             if self.agent_client:
                 await self._update_server(self.step_http_msgs, browser_actions)
             if self.eval_client:
-                await self._update_eval(self.step_http_msgs, browser_actions)
-            
+                early_shutdown = await self.eval_client.update_challenge_status(self.step_http_msgs, browser_actions)
+                
             # self._update_state(result, model_output, step_info)
+            step_info.step_number += 1
             self._log_response(
                 self.step_http_msgs,
                 current_msg=input_messages[-1],
                 response=model_output
             )
+            return early_shutdown
 
         except InterruptedError:
             logger.debug("Agent paused")
@@ -458,7 +466,7 @@ class CustomAgent(Agent):
                     include_in_memory=True
                 )
             ]
-            return
+            return True
 
         # except (ValidationError, ValueError, RateLimitError, ResourceExhausted) as e:
         #     result = await self._handle_step_error(e)
@@ -517,13 +525,17 @@ class CustomAgent(Agent):
                     if self.state.stopped:  # Allow stopping while paused
                         break
 
-                await self.step(step_info)
+                shutdown = await self.step(step_info)
+                if shutdown:
+                    logger.info("Early shutdown")
+                    break
 
                 if self.state.history.is_done():
                     if self.settings.validate_output and step < max_steps - 1:
                         if not await self._validate_output():
                             continue
 
+                    logger.info("Final response validated by agent")
                     await self.log_completion()
                     break
             else:
@@ -565,9 +577,9 @@ class CustomAgent(Agent):
             # except TargetClosedError as e:
             #     pass
 
-            await self.shutdown()
+            await self.shutdown(reason=f"Natural shutdown after [{step_info.step_number}/{step_info.max_steps}]")
 
-    async def shutdown(self, reason: str = "Premature shutdown requested") -> None:
+    async def shutdown(self, reason: str) -> None:
         """Shuts down the agent prematurely and performs cleanup."""
         # Check if already stopped to prevent duplicate shutdown calls
         if hasattr(self.state, 'stopped') and self.state.stopped:

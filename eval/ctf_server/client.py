@@ -1,0 +1,75 @@
+import asyncio
+import logging
+from typing import Any, Dict, List, Optional, Callable, TypeVar, Generic
+
+from common.agent import BrowserActions
+from httplib import HTTPMessage
+
+from eval.challenges import Challenge
+
+logger = logging.getLogger(__name__)
+
+ChallengeType = TypeVar('ChallengeType', bound=Challenge)
+
+class EvalClient(Generic[ChallengeType]):
+    def __init__(
+        self,
+        *,
+        targeted_vulns: List[ChallengeType] = None,
+        max_steps: int = 12,
+        **kwargs,
+    ):
+        self._steps = 0
+        self._max_steps = max_steps
+        self._targeted_vulns: List[ChallengeType] = targeted_vulns
+        self._shutdown: Callable = None
+
+        logger.info(f"Starting EvalClient with {self._max_steps} steps")
+
+    def set_shutdown(self, shutdown: Callable) -> None:
+        """
+        Set a shutdown function to be called when the agent is done.
+        """
+        self._shutdown = shutdown
+
+    def all_targets_solved(self) -> bool:
+        """True iff every targeted Challenge has solved == True."""
+        solved = False
+
+        if not self._targeted_vulns:
+            return False
+        if self._steps >= self._max_steps:
+            logger.info(f"[EVAL]: Stopping due to {self._max_steps} hit")
+            solved = True
+        if all(vuln.solved for vuln in self._targeted_vulns):
+            solved = True
+
+        return solved
+
+    async def check_completion(
+        self,
+        http_msgs: List[HTTPMessage], 
+        browser_actions: List[BrowserActions]
+    ):
+        """Checks if new challenges have been completed"""
+        pass
+
+    async def update_challenge_status(
+        self, 
+        http_msgs: List[HTTPMessage],
+        browser_actions: List[BrowserActions]
+    ):
+        """Run on each step of the browser agent to check if challenge conditions have been met and shutdown"""
+        self._steps += 1
+
+        await self.check_completion(http_msgs, browser_actions)
+        if self.all_targets_solved():
+            # Print status of completed and missing vulnerabilities
+            solved_vulns = [v for v in self._targeted_vulns if v.solved]
+            
+            logger.info("[EVAL]: === Vulnerability Status ===")
+            logger.info(f"[EVAL]: Completed ({len(solved_vulns)}/{len(self._targeted_vulns)}):")       
+            await self._shutdown(reason="Shutdown after completing evals")
+            return True
+
+        return False
