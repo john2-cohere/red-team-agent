@@ -2,6 +2,9 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Callable, TypeVar, Generic
 
+from browser_use.agent.service import Agent
+from browser_use.agent.views import AgentStepInfo
+
 from common.agent import BrowserActions
 from httplib import HTTPMessage
 
@@ -26,19 +29,23 @@ class EvalClient(Generic[ChallengeType]):
 
         logger.info(f"Starting EvalClient with {self._max_steps} steps")
 
+    @property
+    def max_steps(self):
+        return self._max_steps
+
     def set_shutdown(self, shutdown: Callable) -> None:
         """
         Set a shutdown function to be called when the agent is done.
         """
         self._shutdown = shutdown
 
-    def all_targets_solved(self) -> bool:
+    def all_targets_solved(self, step_info: AgentStepInfo) -> bool:
         """True iff every targeted Challenge has solved == True."""
         solved = False
 
         if not self._targeted_vulns:
             return False
-        if self._steps >= self._max_steps:
+        if step_info.step_number >= self._max_steps:
             logger.info(f"[EVAL]: Stopping due to {self._max_steps} hit")
             solved = True
         if all(vuln.solved for vuln in self._targeted_vulns):
@@ -55,15 +62,13 @@ class EvalClient(Generic[ChallengeType]):
         pass
 
     async def update_challenge_status(
-        self, 
+        self,
+        step_info: AgentStepInfo,
         http_msgs: List[HTTPMessage],
         browser_actions: List[BrowserActions]
     ):
-        """Run on each step of the browser agent to check if challenge conditions have been met and shutdown"""
-        self._steps += 1
-
         await self.check_completion(http_msgs, browser_actions)
-        if self.all_targets_solved():
+        if self.all_targets_solved(step_info):
             # Print status of completed and missing vulnerabilities
             solved_vulns = [v for v in self._targeted_vulns if v.solved]
             

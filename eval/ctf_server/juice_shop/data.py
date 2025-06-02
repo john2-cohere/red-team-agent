@@ -1,4 +1,8 @@
-from eval.challenges import Challenge, DiscoveryChallenge
+from eval.challenges import (
+    Challenge, 
+    DiscoveryChallenge, 
+    DiscoveryChallengeURL
+)
 
 JUICESHOP_AUTHNZ_CHALLENGES_FULL = {
     "brokenAuth": [
@@ -101,9 +105,100 @@ JUICESHOP_DISCOVERY_CHALLENGES = [
     DiscoveryChallenge(id=43, key="noSqlReviewsChallenge", name="NoSQL Manipulation_discovery", url="/rest/products/reviews"),
     DiscoveryChallenge(id=44, key="redirectCryptoCurrencyChallenge", name="Outdated Allowlist_discovery", url="/redirect"),
     DiscoveryChallenge(id=45, key="weakPasswordChallenge", name="Password Strength_discovery", url="/rest/user/login"),
-    DiscoveryChallenge(id=46, key="negativeOrderChallenge", name="Payback Time_discovery", url="/rest/basket/:id/checkout")
+    DiscoveryChallenge(id=46, key="negativeOrderChallenge", name="Payback Time_discovery", url="/rest/basket/:id/checkout"),
+    DiscoveryChallenge(id=47, key="premiumPaywallChallenge", name="Premium Paywall_discovery", url="/this/page/is/hidden/behind/an/incredibly/high/paywall/that/could/only/be/unlocked/by/sending/1btc/to/us"),
+    DiscoveryChallenge(id=48, key="privacyPolicyChallenge", name="Privacy Policy_discovery", url="/assets/public/images/padding"),
+    DiscoveryChallenge(id=49, key="privacyPolicyProofChallenge", name="Privacy Policy Inspection_discovery", url="/we/may/also/instruct/you/to/refuse/all/reasonably/necessary/responsibility"),
+    DiscoveryChallenge(id=50, key="changeProductChallenge", name="Product Tampering_discovery", url="/api/Products"),
+    DiscoveryChallenge(id=51, key="reflectedXssChallenge", name="Reflected XSS_discovery", url="/rest/track-order"),
+    DiscoveryChallenge(id=52, key="passwordRepeatChallenge", name="Repetitive Registration_discovery", url="/api/Users"),
+    DiscoveryChallenge(id=53, key="resetPasswordBenderChallenge", name="Reset Bender's Password_discovery", url="/rest/user/reset-password"),
+    DiscoveryChallenge(id=54, key="resetPasswordBjoernChallenge", name="Reset Bjoern's Password_discovery", url="/rest/user/reset-password"),
+    DiscoveryChallenge(id=55, key="resetPasswordJimChallenge", name="Reset Jim's Password_discovery", url="/rest/user/reset-password"),
+    DiscoveryChallenge(id=56, key="resetPasswordMortyChallenge", name="Reset Morty's Password_discovery", url="/rest/user/reset-password"),
+    DiscoveryChallenge(id=57, key="retrieveBlueprintChallenge", name="Retrieve Blueprint_discovery", url="/assets/public/images/products"),
+    DiscoveryChallenge(id=58, key="ssrfChallenge", name="SSRF_discovery", url="/solve/challenges/server-side"),
+    DiscoveryChallenge(id=59, key="sstiChallenge", name="SSTi_discovery", url="/solve/challenges/server-side"),
+    DiscoveryChallenge(id=60, key="scoreBoardChallenge", name="Score Board_discovery", url="/assets/public/images/padding"),
+    DiscoveryChallenge(id=61, key="securityPolicyChallenge", name="Security Policy_discovery", url="/security.txt"),
+    DiscoveryChallenge(id=62, key="persistedXssFeedbackChallenge", name="Server-side XSS Protection_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=63, key="hiddenImageChallenge", name="Steganography_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=64, key="restfulXssChallenge", name="API-only XSS_discovery", url="/api/Products"),
+    DiscoveryChallenge(id=65, key="accessLogDisclosureChallenge", name="Access Log_discovery", url="/support/logs"),
+    DiscoveryChallenge(id=66, key="registerAdminChallenge", name="Admin Registration_discovery", url="/api/Users"),
+    DiscoveryChallenge(id=67, key="adminSectionChallenge", name="Admin Section_discovery", url="/assets/public/images/padding"),
+    DiscoveryChallenge(id=68, key="fileWriteChallenge", name="Arbitrary File Write_discovery", url="/file-upload"),
+    DiscoveryChallenge(id=69, key="resetPasswordBjoernOwaspChallenge", name="Bjoern's Favorite Pet_discovery", url="/rest/user/reset-password"),
+    DiscoveryChallenge(id=70, key="tokenSaleChallenge", name="Blockchain Hype_discovery", url="/assets/public/images/padding"),
+    DiscoveryChallenge(id=71, key="nftUnlockChallenge", name="NFT Takeover_discovery", url="/rest/web3/submitKey"),
+    DiscoveryChallenge(id=72, key="nftMintChallenge", name="Mint the Honey Pot_discovery", url="/rest/web3/nftMintListen"),
+    DiscoveryChallenge(id=73, key="web3WalletChallenge", name="Wallet Depletion_discovery", url="/rest/web3/walletExploitAddress"),
+    DiscoveryChallenge(id=74, key="web3SandboxChallenge", name="Web3 Sandbox_discovery", url="/assets/public/images/padding"),
+    DiscoveryChallenge(id=75, key="rceChallenge", name="Blocked RCE DoS_discovery", url="/b2b/v2/orders"),
+    DiscoveryChallenge(id=76, key="captchaBypassChallenge", name="CAPTCHA Bypass_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=77, key="changePasswordBenderChallenge", name="Change Bender's Password_discovery", url="/rest/user/change-password"),
+    DiscoveryChallenge(id=78, key="christmasSpecialChallenge", name="Christmas Special_discovery", url="/rest/basket/:id/checkout"),
+    DiscoveryChallenge(id=79, key="usernameXssChallenge", name="CSP Bypass_discovery", url="/profile"),
+    DiscoveryChallenge(id=80, key="persistedXssUserChallenge", name="Client-side XSS Protection_discovery", url="/api/Users"),
+    DiscoveryChallenge(id=81, key="directoryListingChallenge", name="Confidential Document_discovery", url="/ftp"),
+    DiscoveryChallenge(id=82, key="localXssChallenge", name="DOM XSS_discovery", url="/#/search"),
+    DiscoveryChallenge(id=83, key="dbSchemaChallenge", name="Database Schema_discovery", url="/rest/products/search"),
+    DiscoveryChallenge(id=84, key="deprecatedInterfaceChallenge", name="Deprecated Interface_discovery", url="/file-upload"),
+    DiscoveryChallenge(id=85, key="easterEggLevelOneChallenge", name="Easter Egg_discovery", url="/ftp"),
+    DiscoveryChallenge(id=86, key="emailLeakChallenge", name="Email Leak_discovery", url="/rest/user/whoami"),
+    DiscoveryChallenge(id=87, key="emptyUserRegistration", name="Empty User Registration_discovery", url="/api/Users"),
+    DiscoveryChallenge(id=88, key="ephemeralAccountantChallenge", name="Ephemeral Accountant_discovery", url="/rest/user/login"),
+    DiscoveryChallenge(id=89, key="errorHandlingChallenge", name="Error Handling_discovery", url="/api/Users"),
+    DiscoveryChallenge(id=90, key="manipulateClockChallenge", name="Expired Coupon_discovery", url="/rest/basket/:id/checkout"),
+    DiscoveryChallenge(id=91, key="extraLanguageChallenge", name="Extra Language_discovery", url="/assets/i18n"),
+    DiscoveryChallenge(id=92, key="feedbackChallenge", name="Five-Star Feedback_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=93, key="forgedCouponChallenge", name="Forged Coupon_discovery", url="/rest/basket/:id/checkout"),
+    DiscoveryChallenge(id=94, key="forgedFeedbackChallenge", name="Forged Feedback_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=95, key="forgedReviewChallenge", name="Forged Review_discovery", url="/rest/products/reviews"),
+    DiscoveryChallenge(id=96, key="jwtForgedChallenge", name="Forged Signed JWT_discovery", url="/rest/user/whoami"),
+    DiscoveryChallenge(id=97, key="forgottenDevBackupChallenge", name="Forgotten Developer Backup_discovery", url="/ftp"),
+    DiscoveryChallenge(id=98, key="forgottenBackupChallenge", name="Forgotten Sales Backup_discovery", url="/ftp"),
+    DiscoveryChallenge(id=99, key="typosquattingAngularChallenge", name="Frontend Typosquatting_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=100, key="ghostLoginChallenge", name="GDPR Data Erasure_discovery", url="/rest/user/login"),
+    DiscoveryChallenge(id=101, key="dataExportChallenge", name="GDPR Data Theft_discovery", url="/rest/user/data-export"),
+    DiscoveryChallenge(id=102, key="httpHeaderXssChallenge", name="HTTP-Header XSS_discovery", url="/rest/saveLoginIp"),
+    DiscoveryChallenge(id=103, key="continueCodeChallenge", name="Imaginary Challenge_discovery", url="/rest/continue-code/apply"),
+    DiscoveryChallenge(id=104, key="dlpPasswordSprayingChallenge", name="Leaked Access Logs_discovery", url="/rest/user/login"),
+    DiscoveryChallenge(id=105, key="dlpPastebinDataLeakChallenge", name="Leaked Unsafe Product_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=106, key="typosquattingNpmChallenge", name="Legacy Typosquatting_discovery", url="/api/Feedbacks"),
+    DiscoveryChallenge(id=107, key="loginAdminChallenge", name="Login Admin_discovery", url="/rest/user/login"),
+    DiscoveryChallenge(id=108, key="loginAmyChallenge", name="Login Amy_discovery", url="/rest/user/login"),
+    DiscoveryChallenge(id=109, key="loginBenderChallenge", name="Login Bender_discovery", url="/rest/user/login"),
+    DiscoveryChallenge(id=110, key="basketManipulateChallenge", name="Manipulate Basket_discovery", url="/api/BasketItems"),
 ]
 
+# Create JUICESHOP_DISCOVERY_URLS from JUICESHOP_DISCOVERY_CHALLENGES
+# Assuming DiscoveryChallengeURL is imported from eval.challenges
+from collections import OrderedDict # For deterministic grouping based on first appearance of URL
+
+_grouped_urls_data = OrderedDict()
+for _challenge in JUICESHOP_DISCOVERY_CHALLENGES:
+    if _challenge.url not in _grouped_urls_data:
+        # For each new URL, store the id, key, and name of the first challenge encountered.
+        # These will be used for the DiscoveryChallengeURL object.
+        _grouped_urls_data[_challenge.url] = {
+            "id": _challenge.id,
+            "key": _challenge.key,
+            "name": _challenge.name,
+            "url_ids": []  # Initialize list to store all challenge IDs for this URL
+        }
+    _grouped_urls_data[_challenge.url]["url_ids"].append(_challenge.id)
+
+JUICESHOP_DISCOVERY_URLS = [
+    DiscoveryChallengeURL(
+        id=data["id"],
+        key=data["key"],
+        name=data["name"], # Name from the first challenge associated with this URL
+        url=url,
+        url_ids=sorted(list(set(data["url_ids"]))) # List of unique, sorted challenge IDs for this URL
+    )
+    for url, data in _grouped_urls_data.items()
+]
 
 USERS = [
     {

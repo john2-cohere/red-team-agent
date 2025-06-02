@@ -1,7 +1,7 @@
 from typing import List
 
 from eval.ctf_server.client import EvalClient
-from eval.challenges import DiscoveryChallenge
+from eval.challenges import DiscoveryChallenge, DiscoveryChallengeURL
 from common.agent import BrowserActions
 
 from httplib import HTTPMessage
@@ -56,7 +56,7 @@ part1 -> part2 -> EXIT
 """.format(url=VULN_APP_URL, creds=str(USERS[0]))
 
 
-class DiscoveryEvalClient(EvalClient[DiscoveryChallenge]):
+class DiscoveryEvalClient(EvalClient[DiscoveryChallengeURL]):
     async def check_completion(
         self, 
         http_msgs: List[HTTPMessage], 
@@ -73,7 +73,7 @@ class DiscoveryEvalClient(EvalClient[DiscoveryChallenge]):
 
 if __name__ == "__main__":
     import asyncio
-    from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_CHALLENGES
+    from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_URLS
 
-    eval_client = DiscoveryEvalClient(max_steps=7, targeted_vulns=JUICESHOP_DISCOVERY_CHALLENGES)
-    asyncio.run(start_agent(AGENT_PROMPT, eval_client))
+    eval_client = DiscoveryEvalClient(max_steps=7, targeted_vulns=JUICESHOP_DISCOVERY_URLS)
+    asyncio.run(start_agent(AGENT_PROMPT, eval_client=eval_client))

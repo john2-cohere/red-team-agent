@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel
 
@@ -11,3 +11,7 @@ class Challenge(BaseModel):
 
 class DiscoveryChallenge(Challenge):
     url: str
+
+class DiscoveryChallengeURL(Challenge):
+    url: str
+    url_ids: List[int]

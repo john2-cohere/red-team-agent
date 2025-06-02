@@ -17,9 +17,9 @@ API_KEY = os.getenv("COHERE_API_KEY")
 
 async def start_agent(
         task: str, 
-        eval_client: EvalClient | None = None, 
         max_steps: int = 15, 
-        headless: bool = False
+        headless: bool = False,
+        **agent_args,
     ) -> None:
     """
     Start a browser agent with the given task.
@@ -51,8 +51,11 @@ async def start_agent(
         "agent_prompt_class": CustomAgentMessagePrompt,
         "app_id": None,
         "close_browser": True,
-        "eval_client": eval_client
     }
+    shared_cfg = { **shared_cfg, **agent_args }
+    
+    if shared_cfg.get("eval_client", None):
+        max_steps = shared_cfg["eval_client"].max_steps
 
     # Create agent harness
     harness = AgentHarness(

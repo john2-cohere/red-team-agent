@@ -4,6 +4,7 @@ import functools
 import logging
 import os
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
@@ -343,6 +344,7 @@ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float 
                         raise RetryError(f"Max retries ({max_retries}) exceeded") from e
                     
                     logger.warning(f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                    logger.warning(traceback.format_exc())
                     logger.info(f"Retrying in {current_delay} seconds...")
                     
                     await asyncio.sleep(current_delay)

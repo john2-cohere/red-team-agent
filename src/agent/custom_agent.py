@@ -1,12 +1,13 @@
-
 import json
 import traceback
-from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, Type, TypeVar, Set, Deque
+import logging
+import asyncio
+from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, Type, TypeVar, Set, Deque, Union
 import os
 import asyncio
 import time
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from collections import deque, defaultdict
 from browser_use.agent.prompts import SystemPrompt, AgentMessagePrompt
 from browser_use.agent.service import Agent
@@ -25,6 +26,7 @@ from browser_use.browser.session import BrowserSession
 from browser_use.browser.context import BrowserContext
 from browser_use.controller.service import Controller   
 from browser_use.utils import time_execution_async
+from browser_use.agent.views import AgentError
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from playwright.sync_api import Request, Response
@@ -60,7 +62,7 @@ DEFAULT_INCLUDE_STATUS = ["2xx", "3xx", "4xx", "5xx"]
 MAX_PAYLOAD_SIZE = 4000
 DEFAULT_FLUSH_TIMEOUT       = 5.0    # seconds to wait for all requests to be flushed
 DEFAULT_PER_REQUEST_TIMEOUT = 2.0     # seconds to wait for *each* unmatched request
-DEFAULT_SETTLE_TIMEOUT      = 1.0     # seconds of network “silence” after the *last* response
+DEFAULT_SETTLE_TIMEOUT      = 1.0     # seconds of network "silence" after the *last* response
 POLL_INTERVAL               = 0.5    # how often we poll internal state
 
 class AgentObservations(str, Enum):
@@ -300,17 +302,16 @@ class CustomAgent(Agent):
             return
 
         step_info.step_number += 1
-        important_contents = model_output.current_state.important_contents
-        if (
-                important_contents
-                and "None" not in important_contents
-                and important_contents not in step_info.memory
-        ):
-            step_info.memory += important_contents + "\n"
+        # important_contents = model_output.current_state.important_contents
+        # if (
+        #         important_contents
+        #         and "None" not in important_contents
+        #         and important_contents not in step_info.memory
+        # ):
+        #     step_info.memory += important_contents + "\n"
 
         logger.info(f"🧠 All Memory: \n{step_info.memory}")
 
-    @retry_async(max_retries=3, exceptions=(Exception))
     @time_execution_async("--get_next_action")
     async def get_next_action(self, input_messages: List[BaseMessage]) -> CustomAgentOutput:
         """Get next action from LLM based on current state"""
@@ -325,9 +326,9 @@ class CustomAgent(Agent):
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
         logger.info(f"[PARSED]: ", parsed_json)
-
+        
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
-
+        
         if parsed is None:
             logger.debug(ai_message.content)
             raise ValueError('Could not parse response.')
@@ -412,28 +413,25 @@ class CustomAgent(Agent):
                 for msg in input_messages:
                     msg.type = ""
                 model_output = await self.get_next_action(input_messages)
-
-                # self.update_step_info(model_output, step_info)
+                self.update_step_info(model_output, step_info)
+                # n_steps counts the number of total steps
                 self.state.n_steps += 1
                 await self._raise_if_stopped_or_paused()
+                self._message_manager._remove_last_state_message()  # Remove state from chat history
+                
             except Exception as e:
-                # model call failed, remove last state message from history
-                # TODO: why does original browser-use do this ??
-                # self._message_manager._remove_state_message_by_index(-1)
-
+                self._message_manager._remove_last_state_message()
                 logger.info(f"LLM Parsing failed, here is the failure message => {input_messages[-1]}")
                 raise e
  
             result: list[ActionResult] = await self.multi_act(model_output.action)
-            # TODO: error handling is questionable here
-            # ideally, we should be assigning ID to browser_actions and checking against
-            # server for dedup
+            
+            # EXECUTION ORDER CHANGE: Moving state update earlier to match reference pattern
+            self.state.last_result = result
+            
+            # CustomAgent specific logic - preserving existing functionality
             curr_page = state.element_tree.clickable_elements_to_string()
-            # is_new_page = self._is_new_page(prev_page, curr_page)
-
             curr_url = (await self.browser_session.get_current_page()).url
-            # logger.info(f"Curr_url:{curr_url}, prev_url: {prev_url}, is_new_page: {is_new_page}")
-
             prev_url = curr_url
             prev_page = curr_page
 
@@ -447,7 +445,7 @@ class CustomAgent(Agent):
             if self.agent_client:
                 await self._update_server(self.step_http_msgs, browser_actions)
             if self.eval_client:
-                early_shutdown = await self.eval_client.update_challenge_status(self.step_http_msgs, browser_actions)
+                early_shutdown = await self.eval_client.update_challenge_status(step_info, self.step_http_msgs, browser_actions)
                 
             # self._update_state(result, model_output, step_info)
             step_info.step_number += 1
@@ -456,7 +454,15 @@ class CustomAgent(Agent):
                 current_msg=input_messages[-1],
                 response=model_output
             )
-            return early_shutdown
+            
+            # Match reference pattern for completion logging
+            if len(result) > 0 and result[-1].is_done:
+                if not self.state.extracted_content:
+                    self.state.extracted_content = step_info.memory
+                result[-1].extracted_content = self.state.extracted_content
+                logger.info(f"📄 Result: {result[-1].extracted_content}")
+
+            self.state.consecutive_failures = 0
 
         except InterruptedError:
             logger.debug("Agent paused")
@@ -466,22 +472,22 @@ class CustomAgent(Agent):
                     include_in_memory=True
                 )
             ]
-            return True
-
-        # except (ValidationError, ValueError, RateLimitError, ResourceExhausted) as e:
-        #     result = await self._handle_step_error(e)
-        #     self.state.last_result = result
+            return early_shutdown
 
         except Exception as e:
+            # Match reference pattern - handle step errors
             logger.error(f"Error in step {self.state.n_steps}: {e}")
             logger.error(traceback.format_exc())
-            step_info.step_number = step_info.max_steps
-
-            raise e
+            
+            # CustomAgent doesn't have _handle_step_error, so we'll create a similar pattern
+            result = await self._handle_step_error(e, step_info)
+            self.state.last_result = result
 
         finally:
             step_end_time = time.time()
-            if state:
+            
+            # Match reference pattern for history creation
+            if state and result:  # Only create history if we have both state and result
                 metadata = StepMetadata(
                     step_number=self.state.n_steps,
                     step_start_time=step_start_time,
@@ -490,6 +496,32 @@ class CustomAgent(Agent):
                 )
                 json_msgs = [await msg.to_json() for msg in self.step_http_msgs]
                 self._make_history_item(model_output, state, result, json_msgs, metadata=metadata)
+        
+        return early_shutdown
+
+    @time_execution_async('--handle_step_error (agent)')
+    async def _handle_step_error(self, error: Exception, step_info: Optional[CustomAgentStepInfo] = None) -> list[ActionResult]:
+        """Handle all types of errors that can occur during a step"""
+        include_trace = logger.isEnabledFor(logging.DEBUG)
+        error_msg = AgentError.format_error(error, include_trace=include_trace)
+        prefix = f'❌ Result failed {self.state.consecutive_failures + 1}/{self.settings.max_failures} times:\n '
+
+        if isinstance(error, (ValidationError, ValueError)):
+            logger.error(f'{prefix}{error_msg}')
+            if 'Max token limit reached' in error_msg:
+                # cut tokens from history
+                self._message_manager.settings.max_input_tokens = self.settings.max_input_tokens - 500
+                logger.info(
+                    f'Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}'
+                )
+                self._message_manager.cut_messages()
+            elif 'Could not parse response' in error_msg:
+                # give model a hint how output should look like
+                error_msg += '\n\nReturn a valid JSON object with the required fields.'
+
+            self.state.consecutive_failures += 1
+
+        return [ActionResult(error=error_msg, include_in_memory=True)]
 
     async def run(self, max_steps: int = 100) -> AgentHistoryList:
         """Execute the task with maximum number of steps"""
