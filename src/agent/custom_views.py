@@ -12,6 +12,8 @@ from browser_use.agent.views import (
 from browser_use.controller.registry.views import ActionModel
 from pydantic import BaseModel, Field, create_model
 
+from .discovery import Plan
+
 @dataclass
 class CustomAgentStepInfo(AgentStepInfo):
     step_number: int
@@ -19,6 +21,8 @@ class CustomAgentStepInfo(AgentStepInfo):
     task: str
     add_infos: str
     memory: str
+    plan: Optional[Plan]
+    prev_page_contents: Optional[str]
 
 class CustomAgentBrain(BaseModel):
     """Current state of the agent"""
@@ -61,11 +65,11 @@ class CustomAgentState(BaseModel):
     consecutive_failures: int = 0
     last_result: List['ActionResult'] = Field(default_factory=list)
     history: AgentHistoryList = Field(default_factory=lambda: AgentHistoryList(history=[]))
-    last_plan: Optional[str] = None
     paused: bool = False
     stopped: bool = False
-
-    message_manager_state: MessageManagerState = Field(default_factory=MessageManagerState)
-
-    last_action: List['ActionModel'] = Field(default_factory=list)
     extracted_content: str = ''
+    message_manager_state: MessageManagerState = Field(default_factory=MessageManagerState)
+    
+    last_plan: Optional[str] = None
+    last_action: List['ActionModel'] = Field(default_factory=list)
+    last_page: Optional[str] = None

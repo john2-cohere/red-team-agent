@@ -2,11 +2,24 @@ import json
 import traceback
 import logging
 import asyncio
-from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, Type, TypeVar, Set, Deque, Union
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Generic,
+    List,
+    Optional,
+    Type,
+    TypeVar,
+    Set,
+    Deque,
+    Union,
+)
 import os
 import asyncio
 import time
-from enum import Enum
+from enum import Enum, nonmember
 from pydantic import BaseModel, ValidationError
 from collections import deque, defaultdict
 from browser_use.agent.prompts import SystemPrompt, AgentMessagePrompt
@@ -24,7 +37,8 @@ from browser_use.browser.browser import Browser
 from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
 from browser_use.browser.context import BrowserContext
-from browser_use.controller.service import Controller   
+from browser_use.controller.service import Controller
+from browser_use.controller.registry.views import ActionModel
 from browser_use.utils import time_execution_async
 from browser_use.agent.views import AgentError
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -41,7 +55,6 @@ from eval.ctf_server.client import EvalClient
 from johnllm import LLMModel, LMP
 from httplib import HTTPRequest, HTTPResponse, HTTPMessage
 
-from playwright._impl._errors import TargetClosedError
 from logging import getLogger
 from logger import init_root_logger
 
@@ -52,25 +65,29 @@ from .custom_message_manager import CustomMessageManager, CustomMessageManagerSe
 from .custom_views import CustomAgentStepInfo, CustomAgentState
 from .http_handler import HTTPHistory, HTTPHandler
 from .logger import AgentLogger
+from .discovery import update_plan, generate_plan, PLANNING_TASK_TEMPLATE
 
 logger = getLogger(__name__)
 
-Context = TypeVar('Context')
+Context = TypeVar("Context")
 
 DEFAULT_INCLUDE_MIME = ["html", "script", "xml", "flash", "other_text"]
 DEFAULT_INCLUDE_STATUS = ["2xx", "3xx", "4xx", "5xx"]
 MAX_PAYLOAD_SIZE = 4000
-DEFAULT_FLUSH_TIMEOUT       = 5.0    # seconds to wait for all requests to be flushed
-DEFAULT_PER_REQUEST_TIMEOUT = 2.0     # seconds to wait for *each* unmatched request
-DEFAULT_SETTLE_TIMEOUT      = 1.0     # seconds of network "silence" after the *last* response
-POLL_INTERVAL               = 0.5    # how often we poll internal state
+DEFAULT_FLUSH_TIMEOUT = 5.0  # seconds to wait for all requests to be flushed
+DEFAULT_PER_REQUEST_TIMEOUT = 2.0  # seconds to wait for *each* unmatched request
+DEFAULT_SETTLE_TIMEOUT = 1.0  # seconds of network "silence" after the *last* response
+POLL_INTERVAL = 0.5  # how often we poll internal state
+
 
 class AgentObservations(str, Enum):
     SITE_STRUCTURE = "site_structure"
 
+
 class NewPage(BaseModel):
     is_new_page: bool
-        
+
+
 class IsNewPage(LMP):
     prompt = """
 You are tasked with determining if the current DOM state of a browser is the same or different page from the previous one,
@@ -91,10 +108,15 @@ Now answer, has the page changed?
 """
     response_format = NewPage
 
+
 # REFACTORED CHANGES:
 # - not using customg agent output and falling back to default defined in Agent
 # - removed state update w.e this does
 # - need add error-handling in step()
+
+
+# Planning Agent:
+# - need to detect when page has changed to
 class CustomAgent(Agent):
     def __init__(
         self,
@@ -104,23 +126,29 @@ class CustomAgent(Agent):
         add_infos: str = "",
         http_handler: HTTPHandler = None,
         # Optional parameters
-		browser: Browser | None = None,
-		browser_context: BrowserContext | None = None,
-		browser_profile: BrowserProfile | None = None,
-		browser_session: BrowserSession | None = None,
-		controller: Controller[Context] = Controller(),
+        browser: Browser | None = None,
+        browser_context: BrowserContext | None = None,
+        browser_profile: BrowserProfile | None = None,
+        browser_session: BrowserSession | None = None,
+        controller: Controller[Context] = Controller(),
         # Initial agent run parameters
         sensitive_data: Optional[Dict[str, str]] = None,
         initial_actions: Optional[List[Dict[str, Dict[str, Any]]]] = None,
         # Cloud Callbacks
-        register_new_step_callback: Callable[['BrowserState', 'AgentOutput', int], Awaitable[None]] | None = None,
-        register_done_callback: Callable[['AgentHistoryList'], Awaitable[None]] | None = None,
-        register_external_agent_status_raise_error_callback: Callable[[], Awaitable[bool]] | None = None,
+        register_new_step_callback: (
+            Callable[["BrowserState", "AgentOutput", int], Awaitable[None]] | None
+        ) = None,
+        register_done_callback: (
+            Callable[["AgentHistoryList"], Awaitable[None]] | None
+        ) = None,
+        register_external_agent_status_raise_error_callback: (
+            Callable[[], Awaitable[bool]] | None
+        ) = None,
         # Agent settings
         use_vision: bool = True,
         use_vision_for_planner: bool = False,
         save_conversation_path: Optional[str] = None,
-        save_conversation_path_encoding: Optional[str] = 'utf-8',
+        save_conversation_path_encoding: Optional[str] = "utf-8",
         max_failures: int = 3,
         retry_delay: int = 10,
         system_prompt_class: Type[SystemPrompt] = SystemPrompt,
@@ -131,19 +159,19 @@ class CustomAgent(Agent):
         generate_gif: bool | str = False,
         available_file_paths: Optional[list[str]] = None,
         include_attributes: list[str] = [
-            'title',
-            'type',
-            'name',
-            'role',
-            'aria-label',
-            'placeholder',
-            'value',
-            'alt',
-            'aria-expanded',
-            'data-date-format',
+            "title",
+            "type",
+            "name",
+            "role",
+            "aria-label",
+            "placeholder",
+            "value",
+            "alt",
+            "aria-expanded",
+            "data-date-format",
         ],
         max_actions_per_step: int = 10,
-        tool_calling_method: Optional[ToolCallingMethod] = 'auto',
+        tool_calling_method: Optional[ToolCallingMethod] = "auto",
         page_extraction_llm: Optional[BaseChatModel] = None,
         planner_llm: Optional[BaseChatModel] = None,
         planner_interval: int = 1,  # Run planner every N steps
@@ -155,7 +183,7 @@ class CustomAgent(Agent):
         eval_client: Optional[EvalClient] = None,
         app_id: Optional[str] = None,
         close_browser: bool = False,
-        agent_name: str = ""
+        agent_name: str = "",
     ):
         if not http_handler:
             raise Exception("Must initialize CustomAgent with HTTPHandler")
@@ -209,7 +237,7 @@ class CustomAgent(Agent):
         self.agent_id = None
         if agent_client and not app_id:
             raise ValueError("app_id must be provided when agent_client is set")
-        
+
         # username = self.agent_client.username if self.agent_client else "default"
         username = self.agent_name if self.agent_name else "default"
         init_root_logger(username)
@@ -219,19 +247,19 @@ class CustomAgent(Agent):
         self.add_infos = add_infos
         self._message_manager = CustomMessageManager(
             task=task,
-			system_message=SystemPrompt(
-				action_description=self.unfiltered_actions,
-				max_actions_per_step=self.settings.max_actions_per_step,
-				# override_system_message=override_system_message,
-				# extend_system_message=extend_system_message,
-			).get_system_message(),
-             settings=CustomMessageManagerSettings(
+            system_message=SystemPrompt(
+                action_description=self.unfiltered_actions,
+                max_actions_per_step=self.settings.max_actions_per_step,
+                # override_system_message=override_system_message,
+                # extend_system_message=extend_system_message,
+            ).get_system_message(),
+            settings=CustomMessageManagerSettings(
                 max_input_tokens=self.settings.max_input_tokens,
                 include_attributes=self.settings.include_attributes,
                 message_context=self.settings.message_context,
                 sensitive_data=sensitive_data,
                 available_file_paths=self.settings.available_file_paths,
-                agent_prompt_class=agent_prompt_class
+                agent_prompt_class=agent_prompt_class,
             ),
             state=self.state.message_manager_state,
         )
@@ -253,17 +281,19 @@ class CustomAgent(Agent):
                 prompt_args={
                     "new_page": new_page,
                     "old_page": old_page,
-                }
+                },
             )
             return is_new_page.is_new_page
         except Exception as e:
             logger.error(f"Error in _is_new_page: {e}")
             return False
-        
-    def _log_response(self, 
-                      http_msgs: List[HTTPMessage],
-                      current_msg: BaseMessage,
-                      response: CustomAgentOutput) -> None:
+
+    def _log_response(
+        self,
+        http_msgs: List[HTTPMessage],
+        current_msg: BaseMessage,
+        response: CustomAgentOutput,
+    ) -> None:
         """Log the model's response"""
         if "Success" in response.current_state.evaluation_previous_goal:
             emoji = "✅"
@@ -289,11 +319,13 @@ class CustomAgent(Agent):
     #     """Setup dynamic action models from controller's registry"""
     #     # Get the dynamic action model from controller's registry
     #     self.ActionModel = self.controller.registry.create_action_model()
-    #     # Create output model with the dynamic actions
+    #     # Create output model with    the dynamic actions
     #     self.AgentOutput = CustomAgentOutput.type_with_custom_actions(self.ActionModel)
 
     def update_step_info(
-        self, model_output: CustomAgentOutput, step_info: Optional[CustomAgentStepInfo] = None
+        self,
+        model_output: CustomAgentOutput,
+        step_info: Optional[CustomAgentStepInfo] = None,
     ):
         """
         update step info
@@ -313,11 +345,13 @@ class CustomAgent(Agent):
         logger.info(f"🧠 All Memory: \n{step_info.memory}")
 
     @time_execution_async("--get_next_action")
-    async def get_next_action(self, input_messages: List[BaseMessage]) -> CustomAgentOutput:
+    async def get_next_action(
+        self, input_messages: List[BaseMessage]
+    ) -> CustomAgentOutput:
         """Get next action from LLM based on current state"""
         ai_message = self.llm.invoke(
-            input_messages, 
-            # model_name=self.model_name, 
+            input_messages,
+            # model_name=self.model_name,
             # response_format=None
         )
         # for tracking message history
@@ -326,24 +360,24 @@ class CustomAgent(Agent):
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
         logger.info(f"[PARSED]: ", parsed_json)
-        
+
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
-        
+
         if parsed is None:
             logger.debug(ai_message.content)
-            raise ValueError('Could not parse response.')
+            raise ValueError("Could not parse response.")
 
         # cut the number of actions to max_actions_per_step if needed
         if len(parsed.action) > self.settings.max_actions_per_step:
             parsed.action = parsed.action[: self.settings.max_actions_per_step]
-        return parsed   
-    
+        return parsed
+
     async def execute_ancillary_actions(self, input_messages: List[BaseMessage]):
         pass
 
-    async def _update_server(self, 
-                             http_msgs: List[HTTPMessage], 
-                             browser_actions: BrowserActions) -> None:
+    async def _update_server(
+        self, http_msgs: List[HTTPMessage], browser_actions: BrowserActions
+    ) -> None:
         """Executed after the agent takes action and browser state is updated"""
         if self.agent_client:
             if not self.agent_id:
@@ -351,17 +385,15 @@ class CustomAgent(Agent):
                 self.agent_id = agent_info["id"]
 
             await self.agent_client.update_server_state(
-                self.app_id, 
-                self.agent_id, 
-                [
-                    await msg.to_json() for msg in http_msgs
-                ],
-                browser_actions
+                self.app_id,
+                self.agent_id,
+                [await msg.to_json() for msg in http_msgs],
+                browser_actions,
             )
 
     def _update_state(self, result, model_output, step_info):
         """Update agent state with results from actions"""
-       
+
         # random state update stuff ...
         for ret_ in result:
             if ret_.extracted_content and "Extracted page" in ret_.extracted_content:
@@ -379,35 +411,80 @@ class CustomAgent(Agent):
 
         self.state.consecutive_failures = 0
 
+    def create_or_update_plan(
+        self,
+        curr_page_contents: str,
+        step_info: CustomAgentStepInfo,
+        last_action: List[ActionModel],
+    ):
+        prev_page_contents, prev_plan = step_info.prev_page_contents, step_info.plan
+        # TODO: we should also detect *intentional* page navigation to reset the plan
+        # if no plan generate plan
+        # only generate plan once we have navigated to a page
+        if not step_info.plan and curr_page_contents:
+            step_info.plan = generate_plan(self.llm, curr_page_contents)
+            task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
+            step_info.task = task
+
+            logger.info(f"[PLAN] Generated plan: {step_info.plan}")
+        elif step_info.plan:
+            step_info.plan = update_plan(
+                self.llm, curr_page_contents, prev_page_contents, prev_plan, last_action
+            )
+            task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
+            step_info.task = task
+
+            logger.info(f"[PLAN] Updated plan: {step_info.plan}")
+        else:
+            logger.info("[PLAN]: No task updates")
+
     @time_execution_async("--step")
     async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> bool:
         """Execute one step of the task"""
-        logger.info(f"Step {self.state.n_steps}")
+        logger.info(f"##############[ Step {self.state.n_steps} ]##############")
         state = None
         model_output = None
         result: list[ActionResult] = []
-        step_start_time = time.time() 
+        step_start_time = time.time()
         tokens = 0
         browser_actions: Optional[BrowserActions] = None
         curr_page: str = ""
         curr_url: str = ""
         early_shutdown = False
 
-        try:    
-            state = await self.browser_session.get_state_summary(cache_clickable_elements_hashes=False)
+        try:
+            state = await self.browser_session.get_state_summary(
+                cache_clickable_elements_hashes=False
+            )
+            page_contents = state.element_tree.clickable_elements_to_string(
+                include_attributes=self.settings.include_attributes
+            )
             browser_actions = BrowserActions()
 
             await self._raise_if_stopped_or_paused()
-            
+
+            # TODO: add results?
+            # TODO: add page url?
+            self.create_or_update_plan(
+                page_contents,
+                step_info, 
+                self.state.last_action
+            )
+
             self._message_manager.add_state_message(
-                state, 
-                self.state.last_action, 
-                self.state.last_result, 
+                state,
+                self.state.last_action,
+                self.state.last_result,
                 self.step_http_msgs,
-                step_info=step_info, 
-                use_vision=self.settings.use_vision
+                step_info=step_info,
+                use_vision=self.settings.use_vision,
             )
             input_messages = self._message_manager.get_messages()
+
+            logger.info(f"MESSAGE_LEN: {len(input_messages)}")
+            for msg in input_messages:
+                logger.info(f"MESSAGE: {type(msg)}")
+
             tokens = self._message_manager.state.history.current_tokens
             try:
                 for msg in input_messages:
@@ -418,19 +495,20 @@ class CustomAgent(Agent):
                 self.state.n_steps += 1
                 await self._raise_if_stopped_or_paused()
                 self._message_manager._remove_last_state_message()  # Remove state from chat history
-                
             except Exception as e:
                 self._message_manager._remove_last_state_message()
-                logger.info(f"LLM Parsing failed, here is the failure message => {input_messages[-1]}")
+                logger.info(
+                    f"LLM Parsing failed, here is the failure message => {input_messages[-1]}"
+                )
                 raise e
- 
+
             result: list[ActionResult] = await self.multi_act(model_output.action)
-            
+
             # EXECUTION ORDER CHANGE: Moving state update earlier to match reference pattern
             self.state.last_result = result
-            
+
             # CustomAgent specific logic - preserving existing functionality
-            curr_page = state.element_tree.clickable_elements_to_string()
+            curr_page = page_contents
             curr_url = (await self.browser_session.get_current_page()).url
             prev_url = curr_url
             prev_page = curr_page
@@ -440,21 +518,22 @@ class CustomAgent(Agent):
             browser_actions = BrowserActions(
                 actions=model_output.action,
                 thought=model_output.current_state.memory,
-                goal=model_output.current_state.next_goal, 
+                goal=model_output.current_state.next_goal,
             )
             if self.agent_client:
                 await self._update_server(self.step_http_msgs, browser_actions)
             if self.eval_client:
-                early_shutdown = await self.eval_client.update_challenge_status(step_info, self.step_http_msgs, browser_actions)
-                
+                early_shutdown = await self.eval_client.update_challenge_status(
+                    step_info, self.step_http_msgs, browser_actions
+                )
+
             # self._update_state(result, model_output, step_info)
-            step_info.step_number += 1
             self._log_response(
                 self.step_http_msgs,
                 current_msg=input_messages[-1],
-                response=model_output
+                response=model_output,
             )
-            
+
             # Match reference pattern for completion logging
             if len(result) > 0 and result[-1].is_done:
                 if not self.state.extracted_content:
@@ -469,7 +548,7 @@ class CustomAgent(Agent):
             self.state.last_result = [
                 ActionResult(
                     error="The agent was paused - now continuing actions might need to be repeated",
-                    include_in_memory=True
+                    include_in_memory=True,
                 )
             ]
             return early_shutdown
@@ -478,14 +557,14 @@ class CustomAgent(Agent):
             # Match reference pattern - handle step errors
             logger.error(f"Error in step {self.state.n_steps}: {e}")
             logger.error(traceback.format_exc())
-            
+
             # CustomAgent doesn't have _handle_step_error, so we'll create a similar pattern
             result = await self._handle_step_error(e, step_info)
             self.state.last_result = result
 
         finally:
             step_end_time = time.time()
-            
+
             # Match reference pattern for history creation
             if state and result:  # Only create history if we have both state and result
                 metadata = StepMetadata(
@@ -495,29 +574,35 @@ class CustomAgent(Agent):
                     input_tokens=tokens,
                 )
                 json_msgs = [await msg.to_json() for msg in self.step_http_msgs]
-                self._make_history_item(model_output, state, result, json_msgs, metadata=metadata)
-        
+                self._make_history_item(
+                    model_output, state, result, json_msgs, metadata=metadata
+                )
+
         return early_shutdown
 
-    @time_execution_async('--handle_step_error (agent)')
-    async def _handle_step_error(self, error: Exception, step_info: Optional[CustomAgentStepInfo] = None) -> list[ActionResult]:
+    @time_execution_async("--handle_step_error (agent)")
+    async def _handle_step_error(
+        self, error: Exception, step_info: Optional[CustomAgentStepInfo] = None
+    ) -> list[ActionResult]:
         """Handle all types of errors that can occur during a step"""
         include_trace = logger.isEnabledFor(logging.DEBUG)
         error_msg = AgentError.format_error(error, include_trace=include_trace)
-        prefix = f'❌ Result failed {self.state.consecutive_failures + 1}/{self.settings.max_failures} times:\n '
+        prefix = f"❌ Result failed {self.state.consecutive_failures + 1}/{self.settings.max_failures} times:\n "
 
         if isinstance(error, (ValidationError, ValueError)):
-            logger.error(f'{prefix}{error_msg}')
-            if 'Max token limit reached' in error_msg:
+            logger.error(f"{prefix}{error_msg}")
+            if "Max token limit reached" in error_msg:
                 # cut tokens from history
-                self._message_manager.settings.max_input_tokens = self.settings.max_input_tokens - 500
+                self._message_manager.settings.max_input_tokens = (
+                    self.settings.max_input_tokens - 500
+                )
                 logger.info(
-                    f'Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}'
+                    f"Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}"
                 )
                 self._message_manager.cut_messages()
-            elif 'Could not parse response' in error_msg:
+            elif "Could not parse response" in error_msg:
                 # give model a hint how output should look like
-                error_msg += '\n\nReturn a valid JSON object with the required fields.'
+                error_msg += "\n\nReturn a valid JSON object with the required fields."
 
             self.state.consecutive_failures += 1
 
@@ -530,26 +615,33 @@ class CustomAgent(Agent):
 
             # Execute initial actions if provided
             if self.initial_actions:
-                result = await self.multi_act(self.initial_actions, check_for_new_elements=False)
+                result = await self.multi_act(
+                    self.initial_actions, check_for_new_elements=False
+                )
                 self.state.last_result = result
 
+            # TODO: not an ideal place to put task ...
             step_info = CustomAgentStepInfo(
-                task=self.task,
                 add_infos=self.add_infos,
                 step_number=1,
                 max_steps=max_steps,
                 memory="",
+                task=self.task,
+                plan=None,
+                prev_page_contents=None,
             )
 
             for step in range(max_steps):
                 # Check if we should stop due to too many failures
                 if self.state.consecutive_failures >= self.settings.max_failures:
-                    logger.error(f'❌ Stopping due to {self.settings.max_failures} consecutive failures')
+                    logger.error(
+                        f"❌ Stopping due to {self.settings.max_failures} consecutive failures"
+                    )
                     break
 
                 # Check control flags before each step
                 if self.state.stopped:
-                    logger.info('Agent stopped')
+                    logger.info("Agent stopped")
                     break
 
                 while self.state.paused:
@@ -573,9 +665,13 @@ class CustomAgent(Agent):
             else:
                 logger.info("❌ Failed to complete task in maximum steps")
                 if not self.state.extracted_content:
-                    self.state.history.history[-1].result[-1].extracted_content = step_info.memory
+                    self.state.history.history[-1].result[
+                        -1
+                    ].extracted_content = step_info.memory
                 else:
-                    self.state.history.history[-1].result[-1].extracted_content = self.state.extracted_content
+                    self.state.history.history[-1].result[
+                        -1
+                    ].extracted_content = self.state.extracted_content
 
             if self.history_file:
                 self.state.history.save_to_file(self.history_file)
@@ -583,58 +679,35 @@ class CustomAgent(Agent):
             return self.state.history
 
         finally:
-            # self.telemetry.capture(
-            #     AgentEndTelemetryEvent(
-            #         agent_id=self.state.agent_id,
-            #         is_done=self.state.history.is_done(),
-            #         success=self.state.history.is_successful(),
-            #         steps=self.state.n_steps,
-            #         max_steps_reached=self.state.n_steps >= max_steps,
-            #         errors=self.state.history.errors(),
-            #         total_input_tokens=self.state.history.total_input_tokens(),
-            #         total_duration_seconds=self.state.history.total_duration_seconds(),
-            #     )
-            # )
-
-            # POST DINNER: get HTTP MESSAGES working by manually starting a browser
-            # TODO: do we need this?
-            # try:
-            #     if self.close_browser:
-            #         logger.info("Closing browser context")
-            #         await self.browser_context.close()
-
-            #     if self.browser or (self.close_browser and self.browser):
-            #         logger.info("Closing browser")
-            #         await self.browser.close()
-            # except TargetClosedError as e:
-            #     pass
-
-            await self.shutdown(reason=f"Natural shutdown after [{step_info.step_number}/{step_info.max_steps}]")
+            await self.shutdown(
+                reason=f"Natural shutdown after [{step_info.step_number}/{step_info.max_steps}]"
+            )
 
     async def shutdown(self, reason: str) -> None:
         """Shuts down the agent prematurely and performs cleanup."""
         # Check if already stopped to prevent duplicate shutdown calls
-        if hasattr(self.state, 'stopped') and self.state.stopped:
+        if hasattr(self.state, "stopped") and self.state.stopped:
             logger.warning("Shutdown already in progress or completed.")
             return
 
         logger.info(f"Initiating premature shutdown: {reason}")
         # Ensure state has 'stopped' attribute before setting
-        if hasattr(self.state, 'stopped'):
-             self.state.stopped = True
+        if hasattr(self.state, "stopped"):
+            self.state.stopped = True
         else:
-             # If AgentState doesn't have stopped, we might need another way
-             # to signal termination or handle this case.
-             logger.warning("Agent state does not have 'stopped' attribute. Cannot signal stop.")
-
+            # If AgentState doesn't have stopped, we might need another way
+            # to signal termination or handle this case.
+            logger.warning(
+                "Agent state does not have 'stopped' attribute. Cannot signal stop."
+            )
 
         # Perform cleanup similar to the finally block in run()
         try:
             # Capture Telemetry for Shutdown Event
             # Check existence of attributes before accessing due to potential type issues
-            agent_id = getattr(self.state, 'agent_id', 'unknown_id')
-            steps = getattr(self.state, 'n_steps', 0)
-            history = getattr(self.state, 'history', None)
+            agent_id = getattr(self.state, "agent_id", "unknown_id")
+            steps = getattr(self.state, "n_steps", 0)
+            history = getattr(self.state, "history", None)
             errors = (history.errors() if history else []) + [f"Shutdown: {reason}"]
             input_tokens = history.total_input_tokens() if history else 0
             duration_seconds = history.total_duration_seconds() if history else 0.0
@@ -656,7 +729,9 @@ class CustomAgent(Agent):
             if self.history_file and history:
                 try:
                     history.save_to_file(self.history_file)
-                    logger.info(f"Saved agent history to {self.history_file} during shutdown.")
+                    logger.info(
+                        f"Saved agent history to {self.history_file} during shutdown."
+                    )
                 except Exception as e:
                     logger.error(f"Failed to save history during shutdown: {e}")
 
@@ -679,20 +754,24 @@ class CustomAgent(Agent):
             # Generate GIF
             if self.settings.generate_gif and history:
                 try:
-                    output_path: str = 'agent_history_shutdown.gif' # Default name
+                    output_path: str = "agent_history_shutdown.gif"  # Default name
                     if isinstance(self.settings.generate_gif, str):
                         # Create a shutdown-specific name based on config
                         base, ext = os.path.splitext(self.settings.generate_gif)
                         output_path = f"{base}_shutdown{ext}"
 
                     logger.info(f"Generating shutdown GIF at {output_path}")
-                    create_history_gif(task=f"{self.task} (Shutdown)", history=history, output_path=output_path)
+                    create_history_gif(
+                        task=f"{self.task} (Shutdown)",
+                        history=history,
+                        output_path=output_path,
+                    )
                 except Exception as e:
-                     logger.error(f"Failed to generate GIF during shutdown: {e}")
-            
+                    logger.error(f"Failed to generate GIF during shutdown: {e}")
+
         except Exception as e:
             # Catch errors during the shutdown cleanup process itself
             logger.error(f"Error during agent shutdown cleanup: {e}")
             logger.error(traceback.format_exc())
         finally:
-             logger.info("Agent shutdown process complete.")
+            logger.info("Agent shutdown process complete.")
