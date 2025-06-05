@@ -4,6 +4,7 @@ import functools
 import logging
 import os
 import time
+import json
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
@@ -355,3 +356,34 @@ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float 
             
         return wrapper
     return decorator
+
+def dump_llm_messages_pretty(messages: list[dict[str, str]]) -> str:
+	"""
+	Serialize a list of LLM messages to a JSON-like string,
+	with multiline content strings preserved as per the specific format.
+	"""
+	output_list_lines = ["["]  # Start of the entire list
+
+	for i, msg_dict in enumerate(messages):
+		role_json = json.dumps(msg_dict["role"])
+
+		# Each line of content_input prefixed with two spaces for final output
+		content_input = msg_dict["content"]
+		indented_content_block = "\n".join(["  " + line for line in content_input.splitlines()])
+
+		# Build the string for a single message dictionary
+		message_block_lines = [
+			"  {",  # Message object indented by 2 spaces
+			f"    \"role\": {role_json},",  # Role indented by 4 spaces
+			f"    \"content\": \"\"\"\n{indented_content_block}\n    \"\"\"",  # Content block with specific indentation
+			"  }"  # Closing brace of message object, indented by 2
+		]
+
+		if i < len(messages) - 1:
+			message_block_lines[-1] += ","  # Add comma if not the last message
+
+		output_list_lines.extend(message_block_lines)
+
+	output_list_lines.append("]")  # End of the entire list
+	return "\n".join(output_list_lines)
+

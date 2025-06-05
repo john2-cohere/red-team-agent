@@ -65,7 +65,13 @@ from .custom_message_manager import CustomMessageManager, CustomMessageManagerSe
 from .custom_views import CustomAgentStepInfo, CustomAgentState
 from .http_handler import HTTPHistory, HTTPHandler
 from .logger import AgentLogger
-from .discovery import update_plan, generate_plan, PLANNING_TASK_TEMPLATE
+from .discovery import (
+    update_plan, 
+    generate_plan, 
+    determine_new_page,
+    NewPageStatus, 
+    PLANNING_TASK_TEMPLATE
+)
 
 logger = getLogger(__name__)
 
@@ -315,17 +321,12 @@ class CustomAgent(Agent):
         for msg in http_msgs:
             logger.info(f"[Agent] {msg.request.url}")
 
-    # def _setup_action_models(self) -> None:
-    #     """Setup dynamic action models from controller's registry"""
-    #     # Get the dynamic action model from controller's registry
-    #     self.ActionModel = self.controller.registry.create_action_model()
-    #     # Create output model with    the dynamic actions
-    #     self.AgentOutput = CustomAgentOutput.type_with_custom_actions(self.ActionModel)
-
     def update_step_info(
         self,
         model_output: CustomAgentOutput,
-        step_info: Optional[CustomAgentStepInfo] = None,
+        step_info: CustomAgentStepInfo,
+        curr_url: str,
+        page_contents: str
     ):
         """
         update step info
@@ -334,6 +335,8 @@ class CustomAgent(Agent):
             return
 
         step_info.step_number += 1
+        step_info.prev_url = curr_url
+        step_info.prev_page_contents = page_contents
         # important_contents = model_output.current_state.important_contents
         # if (
         #         important_contents
@@ -391,6 +394,28 @@ class CustomAgent(Agent):
                 browser_actions,
             )
 
+    async def navigate_back(self) -> ActionResult:
+        """Navigates the browser back one step in history."""
+        logger.info("Attempting to navigate back.")
+        action_model = ActionModel(go_back={})  # ActionModel for 'go_back' with no parameters
+        try:
+            result: ActionResult = await self.controller.act(
+                action=action_model,
+                browser_session=self.browser_session,
+                page_extraction_llm=self.settings.page_extraction_llm,
+                sensitive_data=self.sensitive_data,
+                available_file_paths=self.settings.available_file_paths,
+                context=self.context,
+            )
+            if result.error:
+                logger.error(f"Navigation back failed: {result.error}")
+            else:
+                logger.info(f"Navigation back successful: {result.extracted_content}")
+            return result
+        except Exception as e:
+            logger.error(f"Exception during navigate_back: {e}", exc_info=True)
+            return ActionResult(error=str(e), include_in_memory=True)
+
     def _update_state(self, result, model_output, step_info):
         """Update agent state with results from actions"""
 
@@ -411,23 +436,41 @@ class CustomAgent(Agent):
 
         self.state.consecutive_failures = 0
 
-    def create_or_update_plan(
+    async def create_or_update_plan(
         self,
         curr_page_contents: str,
+        cur_url: str,
         step_info: CustomAgentStepInfo,
         last_action: List[ActionModel],
     ):
-        prev_page_contents, prev_plan = step_info.prev_page_contents, step_info.plan
+        prev_page_contents = step_info.prev_page_contents
+        prev_plan = step_info.plan
+        prev_url = step_info.prev_url
+
         # TODO: we should also detect *intentional* page navigation to reset the plan
         # if no plan generate plan
         # only generate plan once we have navigated to a page
-        if not step_info.plan and curr_page_contents:
+        # skip the browser intiializtion phase where the
+        if step_info.step_number == 1:
+            return
+
+        if not step_info.plan and curr_page_contents and not prev_page_contents:
             step_info.plan = generate_plan(self.llm, curr_page_contents)
             task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
             step_info.task = task
 
             logger.info(f"[PLAN] Generated plan: {step_info.plan}")
-        elif step_info.plan:
+            return
+        
+        is_new_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url)
+        
+        if is_new_page == NewPageStatus.NEW_PAGE:
+            await self.navigate_back()
+            logger.info(f"[PLAN]: New page, navigating back from {cur_url}")
+        elif is_new_page == NewPageStatus.UPDATED_PAGE:
+            # TODO: fix prompt printing
+            # TODO: explicitly tell it to use nested subplan structure
+            # TODO: tell it to not to refer to interactive elements by their index
             step_info.plan = update_plan(
                 self.llm, curr_page_contents, prev_page_contents, prev_plan, last_action
             )
@@ -448,25 +491,20 @@ class CustomAgent(Agent):
         step_start_time = time.time()
         tokens = 0
         browser_actions: Optional[BrowserActions] = None
-        curr_page: str = ""
-        curr_url: str = ""
         early_shutdown = False
 
         try:
-            state = await self.browser_session.get_state_summary(
-                cache_clickable_elements_hashes=False
-            )
-            page_contents = state.element_tree.clickable_elements_to_string(
-                include_attributes=self.settings.include_attributes
-            )
+            state = await self.browser_session.get_state_summary(cache_clickable_elements_hashes=False)
+            page_contents = state.element_tree.clickable_elements_to_string(include_attributes=self.settings.include_attributes)
+            curr_url = (await self.browser_session.get_current_page()).url
             browser_actions = BrowserActions()
 
             await self._raise_if_stopped_or_paused()
 
             # TODO: add results?
-            # TODO: add page url?
-            self.create_or_update_plan(
+            await self.create_or_update_plan(
                 page_contents,
+                curr_url,
                 step_info, 
                 self.state.last_action
             )
@@ -490,7 +528,7 @@ class CustomAgent(Agent):
                 for msg in input_messages:
                     msg.type = ""
                 model_output = await self.get_next_action(input_messages)
-                self.update_step_info(model_output, step_info)
+                self.update_step_info(model_output, step_info, curr_url, page_contents)
                 # n_steps counts the number of total steps
                 self.state.n_steps += 1
                 await self._raise_if_stopped_or_paused()
@@ -503,15 +541,7 @@ class CustomAgent(Agent):
                 raise e
 
             result: list[ActionResult] = await self.multi_act(model_output.action)
-
-            # EXECUTION ORDER CHANGE: Moving state update earlier to match reference pattern
             self.state.last_result = result
-
-            # CustomAgent specific logic - preserving existing functionality
-            curr_page = page_contents
-            curr_url = (await self.browser_session.get_current_page()).url
-            prev_url = curr_url
-            prev_page = curr_page
 
             http_msgs = await self.http_handler.flush()
             self.step_http_msgs = self.http_history.filter_http_messages(http_msgs)
@@ -526,7 +556,7 @@ class CustomAgent(Agent):
                 early_shutdown = await self.eval_client.update_challenge_status(
                     step_info, self.step_http_msgs, browser_actions
                 )
-
+                
             # self._update_state(result, model_output, step_info)
             self._log_response(
                 self.step_http_msgs,
@@ -629,6 +659,7 @@ class CustomAgent(Agent):
                 task=self.task,
                 plan=None,
                 prev_page_contents=None,
+                prev_url=None
             )
 
             for step in range(max_steps):

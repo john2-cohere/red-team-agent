@@ -23,6 +23,7 @@ class CustomAgentStepInfo(AgentStepInfo):
     memory: str
     plan: Optional[Plan]
     prev_page_contents: Optional[str]
+    prev_url: Optional[str]
 
 class CustomAgentBrain(BaseModel):
     """Current state of the agent"""
