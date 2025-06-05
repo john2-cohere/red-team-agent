@@ -12,6 +12,16 @@ from logging import getLogger
 
 logger = getLogger(__name__)
 
+UNDO_NAVIGATION_TASK_TEMPLATE = """
+You have made a wrong move during navigation and you must return to the previous page
+
+Your goal is to return to previous page
+
+Here is what the previous page looks like:
+
+{prev_page_contents}
+"""
+
 PLANNING_TASK_TEMPLATE = """
 Your task is to fully explore and discover every single page of a web application
 To accomplish this, you should try to trigger as many functionalities on the current page as possible

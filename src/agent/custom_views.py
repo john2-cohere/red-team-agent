@@ -64,13 +64,15 @@ class CustomAgentState(BaseModel):
     agent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     n_steps: int = 1
     consecutive_failures: int = 0
-    last_result: List['ActionResult'] = Field(default_factory=list)
     history: AgentHistoryList = Field(default_factory=lambda: AgentHistoryList(history=[]))
     paused: bool = False
     stopped: bool = False
     extracted_content: str = ''
     message_manager_state: MessageManagerState = Field(default_factory=MessageManagerState)
     
-    last_plan: Optional[str] = None
+    plan: Optional[str] = None
     last_action: List['ActionModel'] = Field(default_factory=list)
-    last_page: Optional[str] = None
+    last_result: List['ActionResult'] = Field(default_factory=list)
+    
+    prev_page_contents: Optional[str] = None
+    prev_url: Optional[str] = None

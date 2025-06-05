@@ -11,6 +11,7 @@ from typing import (
     List,
     Optional,
     Type,
+    Tuple,
     TypeVar,
     Set,
     Deque,
@@ -70,7 +71,8 @@ from .discovery import (
     generate_plan, 
     determine_new_page,
     NewPageStatus, 
-    PLANNING_TASK_TEMPLATE
+    PLANNING_TASK_TEMPLATE,
+    UNDO_NAVIGATION_TASK_TEMPLATE
 )
 
 logger = getLogger(__name__)
@@ -143,7 +145,7 @@ class CustomAgent(Agent):
         # Cloud Callbacks
         register_new_step_callback: (
             Callable[["BrowserState", "AgentOutput", int], Awaitable[None]] | None
-        ) = None,
+        ) = None, 
         register_done_callback: (
             Callable[["AgentHistoryList"], Awaitable[None]] | None
         ) = None,
@@ -354,8 +356,6 @@ class CustomAgent(Agent):
         """Get next action from LLM based on current state"""
         ai_message = self.llm.invoke(
             input_messages,
-            # model_name=self.model_name,
-            # response_format=None
         )
         # for tracking message history
         self._message_manager._add_message_with_tokens(ai_message)
@@ -394,28 +394,6 @@ class CustomAgent(Agent):
                 browser_actions,
             )
 
-    async def navigate_back(self) -> ActionResult:
-        """Navigates the browser back one step in history."""
-        logger.info("Attempting to navigate back.")
-        action_model = ActionModel(go_back={})  # ActionModel for 'go_back' with no parameters
-        try:
-            result: ActionResult = await self.controller.act(
-                action=action_model,
-                browser_session=self.browser_session,
-                page_extraction_llm=self.settings.page_extraction_llm,
-                sensitive_data=self.sensitive_data,
-                available_file_paths=self.settings.available_file_paths,
-                context=self.context,
-            )
-            if result.error:
-                logger.error(f"Navigation back failed: {result.error}")
-            else:
-                logger.info(f"Navigation back successful: {result.extracted_content}")
-            return result
-        except Exception as e:
-            logger.error(f"Exception during navigate_back: {e}", exc_info=True)
-            return ActionResult(error=str(e), include_in_memory=True)
-
     def _update_state(self, result, model_output, step_info):
         """Update agent state with results from actions"""
 
@@ -442,7 +420,7 @@ class CustomAgent(Agent):
         cur_url: str,
         step_info: CustomAgentStepInfo,
         last_action: List[ActionModel],
-    ):
+    ) -> Tuple[str, Optional[str]]:
         prev_page_contents = step_info.prev_page_contents
         prev_plan = step_info.plan
         prev_url = step_info.prev_url
@@ -452,34 +430,43 @@ class CustomAgent(Agent):
         # only generate plan once we have navigated to a page
         # skip the browser intiializtion phase where the
         if step_info.step_number == 1:
-            return
+            return step_info.task, None
 
         if not step_info.plan and curr_page_contents and not prev_page_contents:
             step_info.plan = generate_plan(self.llm, curr_page_contents)
-            task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
-            step_info.task = task
+            new_task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
 
             logger.info(f"[PLAN] Generated plan: {step_info.plan}")
-            return
+            return new_task, None
         
+        # TODO: check that:
+        # - eval passes for the navigation back task
+        # - this is used to update / check the planned task
         is_new_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url)
-        
         if is_new_page == NewPageStatus.NEW_PAGE:
-            await self.navigate_back()
+            new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(prev_page_contents=prev_page_contents)
+
             logger.info(f"[PLAN]: New page, navigating back from {cur_url}")
+            return new_task, step_info.task
+
         elif is_new_page == NewPageStatus.UPDATED_PAGE:
-            # TODO: fix prompt printing
+            # TODO: maybe need to rework should backnavigation to be smarter than default to back-navigation
+            # -> ties into how we should use memory -> remembering back-navigation from page
+            # TODO: need to set a status for when we navigate back from a page
+            # TODO: compare to naive results
             # TODO: explicitly tell it to use nested subplan structure
             # TODO: tell it to not to refer to interactive elements by their index
             step_info.plan = update_plan(
                 self.llm, curr_page_contents, prev_page_contents, prev_plan, last_action
             )
-            task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
-            step_info.task = task
+            new_task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
 
             logger.info(f"[PLAN] Updated plan: {step_info.plan}")
+            return new_task, None
         else:
             logger.info("[PLAN]: No task updates")
+            # return the old task
+            return step_info.task, None
 
     @time_execution_async("--step")
     async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> bool:
@@ -502,12 +489,13 @@ class CustomAgent(Agent):
             await self._raise_if_stopped_or_paused()
 
             # TODO: add results?
-            await self.create_or_update_plan(
+            new_task, replace_task = await self.create_or_update_plan(
                 page_contents,
                 curr_url,
                 step_info, 
                 self.state.last_action
             )
+            step_info.task = new_task
 
             self._message_manager.add_state_message(
                 state,
@@ -542,7 +530,6 @@ class CustomAgent(Agent):
 
             result: list[ActionResult] = await self.multi_act(model_output.action)
             self.state.last_result = result
-
             http_msgs = await self.http_handler.flush()
             self.step_http_msgs = self.http_history.filter_http_messages(http_msgs)
             browser_actions = BrowserActions(
@@ -572,6 +559,9 @@ class CustomAgent(Agent):
                 logger.info(f"📄 Result: {result[-1].extracted_content}")
 
             self.state.consecutive_failures = 0
+            # replace task if replace_task exists
+            if replace_task:
+                step_info.task = replace_task
 
         except InterruptedError:
             logger.debug("Agent paused")
