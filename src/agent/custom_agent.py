@@ -338,8 +338,8 @@ class CustomAgent(Agent):
             return
 
         step_info.step_number += 1
-        step_info.prev_url = curr_url
-        step_info.prev_page_contents = page_contents
+        # step_info.prev_url = curr_url
+        # step_info.prev_page_contents = page_contents
         # important_contents = model_output.current_state.important_contents
         # if (
         #         important_contents
@@ -395,18 +395,19 @@ class CustomAgent(Agent):
                 browser_actions,
             )
 
-    def _update_state(self, result, model_output, step_info):
+    def _update_state(self, result: List[ActionResult], model_output: CustomAgentOutput, step_info: CustomAgentStepInfo):
         """Update agent state with results from actions"""
 
-        # random state update stuff ...
-        for ret_ in result:
-            if ret_.extracted_content and "Extracted page" in ret_.extracted_content:
-                # record every extracted page
-                if ret_.extracted_content[:100] not in self.state.extracted_content:
-                    self.state.extracted_content += ret_.extracted_content
+        # for ret_ in result:
+        #     if ret_.extracted_content and "Extracted page" in ret_.extracted_content:
+        #         # record every extracted page
+        #         if ret_.extracted_content[:100] not in self.state.extracted_content:
+        #             self.state.extracted_content += ret_.extracted_content
 
         self.state.last_result = result
         self.state.last_action = model_output.action
+        self.state.eval_prev_goal = model_output.current_state.evaluation_previous_goal
+
         if len(result) > 0 and result[-1].is_done:
             if not self.state.extracted_content:
                 self.state.extracted_content = step_info.memory
@@ -424,6 +425,8 @@ class CustomAgent(Agent):
         prev_page_contents = self.state.prev_page_contents
         prev_plan = self.state.plan
         prev_url = self.state.prev_url
+        eval_prev_goal = self.state.eval_prev_goal
+        prev_goal = self.state.prev_goal
 
         if step_number == 1:
             return self.state.task, None
@@ -442,7 +445,7 @@ class CustomAgent(Agent):
         # TODO: check that:
         # - eval passes for the navigation back task
         # - this is used to update / check the planned task
-        is_new_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url)
+        is_new_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal)
         if is_new_page == NewPageStatus.NEW_PAGE:
             new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(prev_page_contents=prev_page_contents)
 
@@ -519,8 +522,10 @@ class CustomAgent(Agent):
                     msg.type = ""
                 model_output = await self.get_next_action(input_messages)
                 self.update_step_info(model_output, step_info, curr_url, page_contents)
-                # n_steps counts the number of total steps
+                # update the state
                 self.state.n_steps += 1
+                self.state.prev_page_contents = page_contents
+                self.state.prev_url = curr_url
                 await self._raise_if_stopped_or_paused()
                 self._message_manager._remove_last_state_message()  # Remove state from chat history
             except Exception as e:
@@ -532,6 +537,8 @@ class CustomAgent(Agent):
 
             result: list[ActionResult] = await self.multi_act(model_output.action)
             self.state.last_result = result
+            self.state.prev_goal = model_output.current_state.next_goal
+
             http_msgs = await self.http_handler.flush()
             self.step_http_msgs = self.http_history.filter_http_messages(http_msgs)
             browser_actions = BrowserActions(
@@ -546,7 +553,7 @@ class CustomAgent(Agent):
                     step_info.step_number, self.step_http_msgs, browser_actions
                 )
                 
-            # self._update_state(result, model_output, step_info)
+            self._update_state(result, model_output, step_info)
             self._log_response(
                 self.step_http_msgs,
                 current_msg=input_messages[-1],

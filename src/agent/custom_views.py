@@ -63,6 +63,8 @@ class CustomAgentState(BaseModel):
     last_result: List['ActionResult'] = Field(default_factory=list)
     prev_page_contents: Optional[str] = None
     prev_url: Optional[str] = None
+    prev_goal: Optional[str] = None
+    eval_prev_goal: Optional[str] = None
 
     agent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     n_steps: int = 1

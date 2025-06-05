@@ -5,6 +5,7 @@ import json
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from browser_use.controller.registry.views import ActionModel
+from browser_use.agent.views import ActionResult
 
 from src.utils import dump_llm_messages_pretty
 
@@ -41,9 +42,11 @@ Here is the plan:
 {plan}
 """
 
+
 class PlanItem(BaseModel):
     plan: str
     completed: bool = False
+
 
 class Plan(BaseModel):
     plan_items: List[PlanItem]
@@ -61,18 +64,18 @@ class Plan(BaseModel):
                         "properties": {
                             "plan": {
                                 "type": "string",
-                                "description": "The plan item description"
+                                "description": "The plan item description",
                             },
                             "completed": {
                                 "type": "boolean",
                                 "default": False,
-                                "description": "Whether the plan item is completed"
-                            }
-                        }
-                    }
+                                "description": "Whether the plan item is completed",
+                            },
+                        },
+                    },
                 }
-            }
-        }
+            },
+        },
     }
 
     def __str__(self):
@@ -84,6 +87,7 @@ class Plan(BaseModel):
             checkbox = "[ ]" if not plan.completed else "[*]"
             repr += checkbox + "   " + plan.plan + "\n"
         return repr
+
 
 def generate_plan(llm: BaseChatModel, page_contents: str):
     PLAN_PROMPT = """
@@ -103,23 +107,25 @@ Formulate a plan for interacting with the visible elements on the page. You shou
 2. Then a step by step plan to interact with the visible elements
     """
     LLM_MSGS = [
-    {
-        "role": "system",
-        "content" : PLAN_PROMPT
-    },
-    {
-        "role": "user",
-        "content": page_contents
-    }]
+        {"role": "system", "content": PLAN_PROMPT},
+        {"role": "user", "content": page_contents},
+    ]
 
     logger.info(f"[PROMPT GENERATE PLAN]:\n{dump_llm_messages_pretty(LLM_MSGS)}")
-    
+
     res = llm.invoke(LLM_MSGS, response_format=Plan.model_schema)
     res = json.loads(res.content)
     return Plan(**res)
-        
+
+
 # TODO: we may want to use message manager for this to get access to all previous actions
-def update_plan(llm: BaseChatModel, curr_page_contents: str, prev_page_contents: str, prev_plan: str, last_action: List[ActionModel]):
+def update_plan(
+    llm: BaseChatModel,
+    curr_page_contents: str,
+    prev_page_contents: str,
+    prev_plan: str,
+    last_action: List[ActionModel],
+):
     UPDATE_PLAN_PROMPT = """
 Your task is to fully explore and discover every single page of a web application
 To accomplish this, you should try to trigger as many functionalities on the page as possible
@@ -136,12 +142,11 @@ Here are some strategies to guide your interaction:
 A plan was created to accomplish the goals above.
 Here is the original plan:
 {prev_plan}
-""".format(prev_plan=prev_plan)
+""".format(
+        prev_plan=prev_plan
+    )
     LLM_MSGS = [
-        {
-            "role": "system",
-            "content": UPDATE_PLAN_PROMPT
-        },
+        {"role": "system", "content": UPDATE_PLAN_PROMPT},
         {
             "role": "user",
             "content": """
@@ -159,8 +164,12 @@ Here are the actions to affect this change:
 {last_action}
 
 Return the newly updated plan
-""".format(prev_page_contents=prev_page_contents, curr_page_contents=curr_page_contents, last_action=last_action)
-        }
+""".format(
+                prev_page_contents=prev_page_contents,
+                curr_page_contents=curr_page_contents,
+                last_action=last_action,
+            ),
+        },
     ]
 
     logger.info(f"[PROMPT UPDATE PLAN]: \n{dump_llm_messages_pretty(LLM_MSGS)}")
@@ -169,16 +178,25 @@ Return the newly updated plan
     res = json.loads(res.content)
     return Plan(**res)
 
+
 class NewPageStatus(str, enum.Enum):
-	SAME_PAGE = "same_page"
-	NEW_PAGE = "new_page"
-	UPDATED_PAGE = "updated_page"
+    SAME_PAGE = "same_page"
+    NEW_PAGE = "new_page"
+    UPDATED_PAGE = "updated_page"
 
-def determine_new_page(llm: BaseChatModel, curr_page_contents: str, prev_page_contents: str, curr_url: str, prev_url: str) -> NewPageStatus:
-	if curr_page_contents == prev_page_contents:
-		return NewPageStatus.SAME_PAGE
 
-	NEW_PAGE_PROMPT = f"""
+def determine_new_page(
+    llm: BaseChatModel,
+    curr_page_contents: str,
+    prev_page_contents: str,
+    curr_url: str,
+    prev_url: str,
+    prev_goal: str
+) -> NewPageStatus:
+    if curr_page_contents == prev_page_contents:
+        return NewPageStatus.SAME_PAGE
+
+    NEW_PAGE_PROMPT = f"""
 You are presented with the following views from a browser
 Here is the CURR_PAGE:
 URL: {curr_url}
@@ -187,6 +205,9 @@ URL: {curr_url}
 Here is the PREV_PAGE:
 URL: {prev_url}
 {prev_page_contents}
+
+Here is the action that was executed to get from the previous goal to here:
+{prev_goal}
 
 Given the different views, determine if the CURR_PAGE is a:
 
@@ -199,37 +220,43 @@ Some things to keep in mind:
 Which is why when considering whether the CURR_PAGE is a new_page or updated_page, make your decision by considering both the url and the DOM of the CURR_PAGE
 Now make your choices
 """
-	LLM_MSGS = [{"role": "user", "content": NEW_PAGE_PROMPT}]
-	logger.info(f"[PROMPT NEW PAGE]: \n{dump_llm_messages_pretty(LLM_MSGS)}")
+    LLM_MSGS = [{"role": "user", "content": NEW_PAGE_PROMPT}]
+    logger.info(f"[PROMPT NEW PAGE]: \n{dump_llm_messages_pretty(LLM_MSGS)}")
 
-	response_message = llm.invoke(
-		LLM_MSGS,
-		response_format={
-			"type": "json_object",
-			"schema": {
-				"type": "object",
-				"required": ["page_status"],
-				"properties": {
-					"page_status": {
-						"type": "string",
-						"enum": [status.value for status in NewPageStatus],
-						"description": "The status indicating if this is a new page or updated view"
-					}
-				}
-			}
-		}
-	)
+    response_message = llm.invoke(
+        LLM_MSGS,
+        response_format={
+            "type": "json_object",
+            "schema": {
+                "type": "object",
+                "required": ["page_status"],
+                "properties": {
+                    "page_status": {
+                        "type": "string",
+                        "enum": [status.value for status in NewPageStatus],
+                        "description": "The status indicating if this is a new page or updated view",
+                    }
+                },
+            },
+        },
+    )
 
-	if not hasattr(response_message, "content") or not isinstance(response_message.content, str):
-		raise ValueError(f"LLM response content is not a string or attribute 'content' is missing. Response: {response_message}")
+    if not hasattr(response_message, "content") or not isinstance(
+        response_message.content, str
+    ):
+        raise ValueError(
+            f"LLM response content is not a string or attribute 'content' is missing. Response: {response_message}"
+        )
 
-	try:
-		response_data_dict = json.loads(response_message.content)
-	except json.JSONDecodeError as e:
-		raise ValueError(f"Failed to parse LLM response content as JSON: {response_message.content}") from e
+    try:
+        response_data_dict = json.loads(response_message.content)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Failed to parse LLM response content as JSON: {response_message.content}"
+        ) from e
 
-	status = response_data_dict.get("page_status")
-	if status not in NewPageStatus._value2member_map_:
-		raise ValueError(f"Invalid page_status returned by LLM: {status}")
+    status = response_data_dict.get("page_status")
+    if status not in NewPageStatus._value2member_map_:
+        raise ValueError(f"Invalid page_status returned by LLM: {status}")
 
-	return NewPageStatus(status)
+    return NewPageStatus(status)
