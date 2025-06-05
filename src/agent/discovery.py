@@ -103,7 +103,7 @@ Here are some strategies to guide your interaction:
 - elements on the page may be hidden, and to interact with them, you may have to perform some action such as expanding a submenu
 
 Here are some strategies to help you generate a plan:
-- each plan_item should only cover one action (ie. navigating to page, clicking on element, etc.)
+- each plan_item should only cover one action
 - do not reference element indices in your plant_items
 """
 

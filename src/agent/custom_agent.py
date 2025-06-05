@@ -21,6 +21,7 @@ import os
 import asyncio
 import time
 from enum import Enum, nonmember
+from langchain.schema import AIMessage
 from numpy import int16
 from pydantic import BaseModel, ValidationError
 from collections import deque, defaultdict
@@ -353,13 +354,13 @@ class CustomAgent(Agent):
     @time_execution_async("--get_next_action")
     async def get_next_action(
         self, input_messages: List[BaseMessage]
-    ) -> CustomAgentOutput:
+    ) -> Tuple[CustomAgentOutput, AIMessage]:
         """Get next action from LLM based on current state"""
         ai_message = self.llm.invoke(
             input_messages,
         )
         # for tracking message history
-        self._message_manager._add_message_with_tokens(ai_message)
+        # self._message_manager._add_message_with_tokens(ai_message)
         ai_content = ai_message.content.replace("```json", "").replace("```", "")
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
@@ -374,7 +375,7 @@ class CustomAgent(Agent):
         # cut the number of actions to max_actions_per_step if needed
         if len(parsed.action) > self.settings.max_actions_per_step:
             parsed.action = parsed.action[: self.settings.max_actions_per_step]
-        return parsed
+        return parsed, ai_message
 
     async def execute_ancillary_actions(self, input_messages: List[BaseMessage]):
         pass
@@ -395,7 +396,15 @@ class CustomAgent(Agent):
                 browser_actions,
             )
 
-    def _update_state(self, result: List[ActionResult], model_output: CustomAgentOutput, step_info: CustomAgentStepInfo):
+    def _update_state(
+        self,
+        result: List[ActionResult],
+        model_output: CustomAgentOutput,
+        step_info: CustomAgentStepInfo,
+        page_contents: str,
+        curr_url: str,
+        next_goal: str,
+    ):
         """Update agent state with results from actions"""
 
         # for ret_ in result:
@@ -403,8 +412,12 @@ class CustomAgent(Agent):
         #         # record every extracted page
         #         if ret_.extracted_content[:100] not in self.state.extracted_content:
         #             self.state.extracted_content += ret_.extracted_content
-
+        self.state.n_steps += 1
+        self.state.prev_page_contents = page_contents
+        self.state.prev_url = curr_url
         self.state.last_result = result
+        self.state.prev_goal = next_goal
+
         self.state.last_action = model_output.action
         self.state.eval_prev_goal = model_output.current_state.evaluation_previous_goal
 
@@ -511,23 +524,26 @@ class CustomAgent(Agent):
                 use_vision=self.settings.use_vision,
             )
             input_messages = self._message_manager.get_messages()
-
-            logger.info(f"MESSAGE_LEN: {len(input_messages)}")
-            for msg in input_messages:
-                logger.info(f"MESSAGE: {type(msg)}")
-
             tokens = self._message_manager.state.history.current_tokens
             try:
+                # HACK:
                 for msg in input_messages:
                     msg.type = ""
-                model_output = await self.get_next_action(input_messages)
+                model_output, output_msg = await self.get_next_action(input_messages)
+
+                # NOTE: we remove all of message requests but we keep all of the model outputs
+                # as chat history
+                self._message_manager._remove_last_state_message()
+                self._message_manager._add_message_with_tokens(output_msg)
+                logger.info(f"MESSAGE_LEN: {len(input_messages)}")
+                for msg in input_messages:
+                    logger.info(f"MESSAGE: {type(msg)}")
+
                 self.update_step_info(model_output, step_info, curr_url, page_contents)
                 # update the state
-                self.state.n_steps += 1
-                self.state.prev_page_contents = page_contents
-                self.state.prev_url = curr_url
                 await self._raise_if_stopped_or_paused()
-                self._message_manager._remove_last_state_message()  # Remove state from chat history
+
+                logger.info(f"MESSAGE_LEN AFTER: {len(self._message_manager.get_messages())}")
             except Exception as e:
                 self._message_manager._remove_last_state_message()
                 logger.info(
@@ -536,8 +552,6 @@ class CustomAgent(Agent):
                 raise e
 
             result: list[ActionResult] = await self.multi_act(model_output.action)
-            self.state.last_result = result
-            self.state.prev_goal = model_output.current_state.next_goal
 
             http_msgs = await self.http_handler.flush()
             self.step_http_msgs = self.http_history.filter_http_messages(http_msgs)
@@ -553,7 +567,14 @@ class CustomAgent(Agent):
                     step_info.step_number, self.step_http_msgs, browser_actions
                 )
                 
-            self._update_state(result, model_output, step_info)
+            self._update_state(
+                result, 
+                model_output, 
+                step_info, 
+                page_contents, 
+                curr_url, 
+                model_output.current_state.next_goal
+            )
             self._log_response(
                 self.step_http_msgs,
                 current_msg=input_messages[-1],
