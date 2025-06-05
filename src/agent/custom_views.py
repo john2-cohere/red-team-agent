@@ -18,12 +18,8 @@ from .discovery import Plan
 class CustomAgentStepInfo(AgentStepInfo):
     step_number: int
     max_steps: int
-    task: str
     add_infos: str
     memory: str
-    plan: Optional[Plan]
-    prev_page_contents: Optional[str]
-    prev_url: Optional[str]
 
 class CustomAgentBrain(BaseModel):
     """Current state of the agent"""
@@ -61,6 +57,13 @@ class CustomAgentOutput(AgentOutput):
 
 
 class CustomAgentState(BaseModel):
+    task: str
+    plan: Optional[str] = None
+    last_action: List['ActionModel'] = Field(default_factory=list)
+    last_result: List['ActionResult'] = Field(default_factory=list)
+    prev_page_contents: Optional[str] = None
+    prev_url: Optional[str] = None
+
     agent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     n_steps: int = 1
     consecutive_failures: int = 0
@@ -69,10 +72,3 @@ class CustomAgentState(BaseModel):
     stopped: bool = False
     extracted_content: str = ''
     message_manager_state: MessageManagerState = Field(default_factory=MessageManagerState)
-    
-    plan: Optional[str] = None
-    last_action: List['ActionModel'] = Field(default_factory=list)
-    last_result: List['ActionResult'] = Field(default_factory=list)
-    
-    prev_page_contents: Optional[str] = None
-    prev_url: Optional[str] = None

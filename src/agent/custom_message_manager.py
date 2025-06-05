@@ -76,6 +76,7 @@ class CustomMessageManager(MessageManager):
             actions: List[ActionModel],
             result: List[ActionResult],
             http_msgs: List[HTTPMessage],
+            task: str,
             step_info: Optional[CustomAgentStepInfo] = None,
             use_vision=True,
     ) -> None:
@@ -87,6 +88,7 @@ class CustomMessageManager(MessageManager):
             result,
             self.settings.include_attributes,
             http_msgs,
+            task,
             step_info,
         ).get_user_message(use_vision)
         self._add_message_with_tokens(state_message)

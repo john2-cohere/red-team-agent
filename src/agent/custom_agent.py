@@ -21,6 +21,7 @@ import os
 import asyncio
 import time
 from enum import Enum, nonmember
+from numpy import int16
 from pydantic import BaseModel, ValidationError
 from collections import deque, defaultdict
 from browser_use.agent.prompts import SystemPrompt, AgentMessagePrompt
@@ -251,7 +252,7 @@ class CustomAgent(Agent):
         init_root_logger(username)
         self.observations = {title.value: "" for title in AgentObservations}
 
-        self.state = CustomAgentState()
+        self.state = CustomAgentState(task=task)
         self.add_infos = add_infos
         self._message_manager = CustomMessageManager(
             task=task,
@@ -418,25 +419,24 @@ class CustomAgent(Agent):
         self,
         curr_page_contents: str,
         cur_url: str,
-        step_info: CustomAgentStepInfo,
-        last_action: List[ActionModel],
+        step_number: int16
     ) -> Tuple[str, Optional[str]]:
-        prev_page_contents = step_info.prev_page_contents
-        prev_plan = step_info.plan
-        prev_url = step_info.prev_url
+        prev_page_contents = self.state.prev_page_contents
+        prev_plan = self.state.plan
+        prev_url = self.state.prev_url
+
+        if step_number == 1:
+            return self.state.task, None
 
         # TODO: we should also detect *intentional* page navigation to reset the plan
         # if no plan generate plan
         # only generate plan once we have navigated to a page
         # skip the browser intiializtion phase where the
-        if step_info.step_number == 1:
-            return step_info.task, None
+        if not self.state.plan and curr_page_contents and not prev_page_contents:
+            self.state.plan = generate_plan(self.llm, curr_page_contents)
+            new_task = PLANNING_TASK_TEMPLATE.format(plan=self.state.plan)
 
-        if not step_info.plan and curr_page_contents and not prev_page_contents:
-            step_info.plan = generate_plan(self.llm, curr_page_contents)
-            new_task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
-
-            logger.info(f"[PLAN] Generated plan: {step_info.plan}")
+            logger.info(f"[PLAN] Generated plan: {self.state.plan}")
             return new_task, None
         
         # TODO: check that:
@@ -447,7 +447,7 @@ class CustomAgent(Agent):
             new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(prev_page_contents=prev_page_contents)
 
             logger.info(f"[PLAN]: New page, navigating back from {cur_url}")
-            return new_task, step_info.task
+            return new_task, self.state.task
 
         elif is_new_page == NewPageStatus.UPDATED_PAGE:
             # TODO: maybe need to rework should backnavigation to be smarter than default to back-navigation
@@ -456,17 +456,17 @@ class CustomAgent(Agent):
             # TODO: compare to naive results
             # TODO: explicitly tell it to use nested subplan structure
             # TODO: tell it to not to refer to interactive elements by their index
-            step_info.plan = update_plan(
-                self.llm, curr_page_contents, prev_page_contents, prev_plan, last_action
+            self.state.plan = update_plan(
+                self.llm, curr_page_contents, prev_page_contents, prev_plan, self.state.last_action
             )
-            new_task = PLANNING_TASK_TEMPLATE.format(plan=step_info.plan)
+            new_task = PLANNING_TASK_TEMPLATE.format(plan=self.state.plan)
 
-            logger.info(f"[PLAN] Updated plan: {step_info.plan}")
+            logger.info(f"[PLAN] Updated plan: {self.state.plan}")
             return new_task, None
         else:
             logger.info("[PLAN]: No task updates")
             # return the old task
-            return step_info.task, None
+            return self.state.task, None
 
     @time_execution_async("--step")
     async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> bool:
@@ -481,6 +481,8 @@ class CustomAgent(Agent):
         early_shutdown = False
 
         try:
+            # NOTE: this is state of the playwright browser, not to be confused with self.state
+            # which represents state of the agent
             state = await self.browser_session.get_state_summary(cache_clickable_elements_hashes=False)
             page_contents = state.element_tree.clickable_elements_to_string(include_attributes=self.settings.include_attributes)
             curr_url = (await self.browser_session.get_current_page()).url
@@ -492,16 +494,16 @@ class CustomAgent(Agent):
             new_task, replace_task = await self.create_or_update_plan(
                 page_contents,
                 curr_url,
-                step_info, 
-                self.state.last_action
+                step_info.step_number
             )
-            step_info.task = new_task
+            self.state.task = new_task
 
             self._message_manager.add_state_message(
                 state,
                 self.state.last_action,
                 self.state.last_result,
                 self.step_http_msgs,
+                self.state.task,
                 step_info=step_info,
                 use_vision=self.settings.use_vision,
             )
@@ -541,7 +543,7 @@ class CustomAgent(Agent):
                 await self._update_server(self.step_http_msgs, browser_actions)
             if self.eval_client:
                 early_shutdown = await self.eval_client.update_challenge_status(
-                    step_info, self.step_http_msgs, browser_actions
+                    step_info.step_number, self.step_http_msgs, browser_actions
                 )
                 
             # self._update_state(result, model_output, step_info)
@@ -561,7 +563,7 @@ class CustomAgent(Agent):
             self.state.consecutive_failures = 0
             # replace task if replace_task exists
             if replace_task:
-                step_info.task = replace_task
+                self.state.task = replace_task
 
         except InterruptedError:
             logger.debug("Agent paused")
@@ -646,10 +648,6 @@ class CustomAgent(Agent):
                 step_number=1,
                 max_steps=max_steps,
                 memory="",
-                task=self.task,
-                plan=None,
-                prev_page_contents=None,
-                prev_url=None
             )
 
             for step in range(max_steps):

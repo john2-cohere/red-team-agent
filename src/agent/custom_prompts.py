@@ -9,7 +9,8 @@ from datetime import datetime
 import importlib
 from httplib import HTTPMessage
 
-from .custom_views import CustomAgentStepInfo
+
+from .custom_views import CustomAgentStepInfo, CustomAgentState
 
 
 class CustomSystemPrompt(SystemPrompt):
@@ -32,6 +33,7 @@ class CustomAgentMessagePrompt(AgentMessagePrompt):
             result: List[ActionResult], 
             include_attributes: list[str],
             http_msgs: List[HTTPMessage],
+            task: str,
             step_info: Optional[CustomAgentStepInfo],
     ):
         super(CustomAgentMessagePrompt, self).__init__(browser_state_summary=browser_state_summary,
@@ -40,6 +42,7 @@ class CustomAgentMessagePrompt(AgentMessagePrompt):
                                                        step_info=step_info)
         self.actions = actions
         self.http_msgs = http_msgs
+        self.task = task
 
     def get_user_message(self, use_vision: bool = True) -> HumanMessage:
         if self.step_info:
@@ -73,7 +76,7 @@ class CustomAgentMessagePrompt(AgentMessagePrompt):
 
         state_description = f"""
 {step_info_description}
-1. Task: {self.step_info.task}. 
+1. Task: {self.task}. 
 2. Hints(Optional): 
 {self.step_info.add_infos}
 3. Memory: 
