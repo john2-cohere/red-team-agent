@@ -88,11 +88,11 @@ class Plan(BaseModel):
             repr += checkbox + "   " + plan.plan + "\n"
         return repr
 
-
-def generate_plan(llm: BaseChatModel, page_contents: str):
-    PLAN_PROMPT = """
+# TODO: dump the ActionModel schema here as well?
+PLAN_PREAMBLE = """
 Your task is to fully explore and discover every single page of a web application
 To accomplish this, you should try to trigger as many functionalities on the page as possible
+
 Your goal is to discover the following elements on this page:
 1. outgoing_links: links to other pages of the same web application
 2. backend_calls: requests made to backend API services
@@ -100,12 +100,20 @@ Your goal is to discover the following elements on this page:
 You can find both by interacting with the webpage
 Here are some strategies to guide your interaction:
 - do not interact with elements that you suspect will trigger a navigation action off of the page
-- elements on the page may be hidden, and to interact with them, you may have to perform some action such as expanding a submenu  
+- elements on the page may be hidden, and to interact with them, you may have to perform some action such as expanding a submenu
 
+Here are some strategies to help you generate a plan:
+- each plan_item should only cover one action (ie. navigating to page, clicking on element, etc.)
+- do not reference element indices in your plant_items
+"""
+
+def generate_plan(llm: BaseChatModel, page_contents: str):
+    PLAN_PROMPT = """
 Formulate a plan for interacting with the visible elements on the page. You should output two parts:
 1. First your observations about the page
 2. Then a step by step plan to interact with the visible elements
     """
+    PLAN_PROMPT = PLAN_PREAMBLE + PLAN_PROMPT
     LLM_MSGS = [
         {"role": "system", "content": PLAN_PROMPT},
         {"role": "user", "content": page_contents},
@@ -127,24 +135,13 @@ def update_plan(
     last_action: List[ActionModel],
 ):
     UPDATE_PLAN_PROMPT = """
-Your task is to fully explore and discover every single page of a web application
-To accomplish this, you should try to trigger as many functionalities on the page as possible
-
-Your goal is to discover the following elements on this page:
-1. outgoing_links: links to other pages of the same web application
-2. backend_calls: requests made to backend API services
-
-You can find both by interacting with the webpage
-Here are some strategies to guide your interaction:
-- do not interact with elements that you suspect will trigger a navigation action off of the page
-- elements on the page may be hidden, and to interact with them, you may have to perform some action such as expanding a submenu  
-
 A plan was created to accomplish the goals above.
 Here is the original plan:
 {prev_plan}
 """.format(
         prev_plan=prev_plan
     )
+    UPDATE_PLAN_PROMPT = PLAN_PREAMBLE + UPDATE_PLAN_PROMPT
     LLM_MSGS = [
         {"role": "system", "content": UPDATE_PLAN_PROMPT},
         {
@@ -154,9 +151,11 @@ Your goal is to update the plan if nessescary. This should happen for the follow
 1. to check off a completed plan item
 2. the page has been dynamically updated, and a modification to the plan is required
 
+New items should be added to the beginning of the plan
+
 Here is the previous page:
 {prev_page_contents}
-
+s
 Here is the current page:
 {curr_page_contents}
 
