@@ -1,7 +1,11 @@
+from ast import NameConstant
+from numpy.char import str_len
+from playwright.async_api import Page
 from pydantic import BaseModel
-from typing import List, Dict, ClassVar
+from typing import List, Dict, ClassVar, Optional, Tuple
 import enum
 import json
+import difflib
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from browser_use.controller.registry.views import ActionModel
@@ -14,12 +18,12 @@ from logging import getLogger
 logger = getLogger(__name__)
 
 UNDO_NAVIGATION_TASK_TEMPLATE = """
-You have made a wrong move during navigation and you must return to the previous page
+You have successfully visited the new page
 
-Your goal is to return to previous page
+Your goal is now to return back to the previous page
 
-Here is what the previous page looks like:
-
+Here is the previous page:
+URL: {prev_url}
 {prev_page_contents}
 """
 
@@ -105,7 +109,7 @@ Here are some strategies to guide your interaction:
 Here are some strategies to help you generate a plan:
 - each plan_item should only cover one action
 - do not reference element indices in your plant_items
-"""
+""" 
 
 def generate_plan(llm: BaseChatModel, page_contents: str):
     PLAN_PROMPT = """
@@ -155,7 +159,7 @@ New items should be added to the beginning of the plan
 
 Here is the previous page:
 {prev_page_contents}
-s
+
 Here is the current page:
 {curr_page_contents}
 
@@ -177,12 +181,32 @@ Return the newly updated plan
     res = json.loads(res.content)
     return Plan(**res)
 
-
 class NewPageStatus(str, enum.Enum):
     SAME_PAGE = "same_page"
     NEW_PAGE = "new_page"
     UPDATED_PAGE = "updated_page"
 
+class NavigationPage(BaseModel):
+    page_type: NewPageStatus
+    name: Optional[str] = ""
+    model_schema: ClassVar[Dict] = {
+        "type": "json_object",
+        "schema": {
+            "type": "object",
+            "required": ["page_type"],
+            "properties": {
+                "page_type": {
+                    "type": "string",
+                    "enum": [status.value for status in NewPageStatus],
+                    "description": "The type of page transition that occurred"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional name for the updated page view"
+                }
+            }
+        }
+    }
 
 def determine_new_page(
     llm: BaseChatModel,
@@ -190,10 +214,32 @@ def determine_new_page(
     prev_page_contents: str,
     curr_url: str,
     prev_url: str,
-    prev_goal: str
-) -> NewPageStatus:
+    prev_goal: str,
+    subpages: List[Tuple[str, str, str]],
+) -> NavigationPage:
     if curr_page_contents == prev_page_contents:
         return NewPageStatus.SAME_PAGE
+
+    # Check if this matches any previously seen subpages
+    highest_match = 0
+    matched_subpage = None
+    for url, page_contents, name in subpages:
+        if curr_url != url:
+            continue 
+        matcher = difflib.SequenceMatcher(None, curr_page_contents, page_contents)
+        ratio = matcher.ratio()
+        if ratio > highest_match:
+            highest_match = ratio
+            matched_subpage = name
+
+    # If we have a very high match with a previous subpage,
+    # this is likely an updated view rather than new page
+    if highest_match > 0.9:
+        logger.info(f"Found match for {curr_url} in existing subpage {matched_subpage}")
+        return NavigationPage(
+            page_type=NewPageStatus.UPDATED_PAGE,
+            name=matched_subpage
+        )
 
     NEW_PAGE_PROMPT = f"""
 You are presented with the following views from a browser
@@ -212,6 +258,7 @@ Given the different views, determine if the CURR_PAGE is a:
 
 1. new_page: different page of the application
 2. updated_page: same page of the application, but with an updated view (ie. submenu expansion, pop-up)
+- if it is an updated_page, then also return the name of updated_page
 
 Some things to keep in mind:
 1. visible elements: the view presented only shows visible elements in the DOM; so elements that are on the same page might not be displayed because is_top_element == False or is_in_viewport == False
@@ -220,42 +267,42 @@ Which is why when considering whether the CURR_PAGE is a new_page or updated_pag
 Now make your choices
 """
     LLM_MSGS = [{"role": "user", "content": NEW_PAGE_PROMPT}]
-    logger.info(f"[PROMPT NEW PAGE]: \n{dump_llm_messages_pretty(LLM_MSGS)}")
 
-    response_message = llm.invoke(
+    res = llm.invoke(
         LLM_MSGS,
-        response_format={
-            "type": "json_object",
-            "schema": {
-                "type": "object",
-                "required": ["page_status"],
-                "properties": {
-                    "page_status": {
-                        "type": "string",
-                        "enum": [status.value for status in NewPageStatus],
-                        "description": "The status indicating if this is a new page or updated view",
-                    }
-                },
-            },
-        },
+        response_format=NavigationPage.model_schema
     )
+    res = json.loads(res.content)
+    page = NavigationPage(**res)
 
-    if not hasattr(response_message, "content") or not isinstance(
-        response_message.content, str
-    ):
-        raise ValueError(
-            f"LLM response content is not a string or attribute 'content' is missing. Response: {response_message}"
-        )
+    logger.info(f"[PROMPT NEW PAGE]: \n{dump_llm_messages_pretty(LLM_MSGS)}\nPAGE_STATUS: {page.page_type}")
 
-    try:
-        response_data_dict = json.loads(response_message.content)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Failed to parse LLM response content as JSON: {response_message.content}"
-        ) from e
+    return page
 
-    status = response_data_dict.get("page_status")
-    if status not in NewPageStatus._value2member_map_:
-        raise ValueError(f"Invalid page_status returned by LLM: {status}")
 
-    return NewPageStatus(status)
+# # TODO: technically we can use evaluation here if it was consistent instead of using
+# # comparing the prev and curr page contents
+# def check_plan(
+#     plan: Plan, 
+#     prev_page_contents: str,
+#     curr_page_contents: str, 
+#     prev_goal: str
+# ):
+#     CHECK_PLAN = """
+# You are a web agent that is tasked with accomplishing some browser navigation goals
+
+# Here is the plan you are following:
+# {plan}
+
+# Here is the previous page:
+# {prev_page_contents}
+
+# Here is the current page:
+# {curr_page_contents}
+
+# Here is the action that you previously executed:
+# {prev_goal}
+
+# Determine 
+
+# """

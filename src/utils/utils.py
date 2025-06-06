@@ -6,6 +6,7 @@ import os
 import time
 import json
 import traceback
+import difflib
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
@@ -386,4 +387,3 @@ def dump_llm_messages_pretty(messages: list[dict[str, str]]) -> str:
 
 	output_list_lines.append("]")  # End of the entire list
 	return "\n".join(output_list_lines)
-

@@ -73,6 +73,7 @@ from .discovery import (
     generate_plan, 
     determine_new_page,
     NewPageStatus, 
+    NavigationPage,
     PLANNING_TASK_TEMPLATE,
     UNDO_NAVIGATION_TASK_TEMPLATE
 )
@@ -89,41 +90,22 @@ DEFAULT_PER_REQUEST_TIMEOUT = 2.0  # seconds to wait for *each* unmatched reques
 DEFAULT_SETTLE_TIMEOUT = 1.0  # seconds of network "silence" after the *last* response
 POLL_INTERVAL = 0.5  # how often we poll internal state
 
+# class SubPage:
+#     url: str
+#     page_contents: str
+#     name: str
 
-class AgentObservations(str, Enum):
-    SITE_STRUCTURE = "site_structure"
+# class Page(BaseModel):
+#     # name: str ???
+#     url: str
+#     homepage: str
+#     subpages: List[SubPage]
 
+# class AgentNavigationState(BaseModel):
+#     curr_page: 
+#     all_pages: List[Page]
 
-class NewPage(BaseModel):
-    is_new_page: bool
-
-
-class IsNewPage(LMP):
-    prompt = """
-You are tasked with determining if the current DOM state of a browser is the same or different page from the previous one,
-indicating that the browser has executed a navigational action between the two states. Be careful to differentiate between
-different webpages and the same webpage with a slightly changed view (ie. popup, menu dropdown, etc.)
-
-Here is the new page:
-{{new_page}}
-
-Here is the previous page:
-{{old_page}}
-
-You are tasked with determining if the current DOM state of a browser is the same or different page from the previous one,
-indicating that the browser has executed a navigational action between the two states. Be careful to differentiate between
-different webpages and the same webpage with a slightly changed view (ie. popup, menu dropdown, etc.)
-
-Now answer, has the page changed?
-"""
-    response_format = NewPage
-
-
-# REFACTORED CHANGES:
-# - not using customg agent output and falling back to default defined in Agent
-# - removed state update w.e this does
-# - need add error-handling in step()
-
+     
 
 # Planning Agent:
 # - need to detect when page has changed to
@@ -231,6 +213,9 @@ class CustomAgent(Agent):
             injected_agent_state=None,
             context=context,
         )
+        self.sub_pages = []
+        self.pages = []
+
         self.http_handler = http_handler
         self.model_name = model_name
         self.agent_name = agent_name
@@ -251,7 +236,6 @@ class CustomAgent(Agent):
         # username = self.agent_client.username if self.agent_client else "default"
         username = self.agent_name if self.agent_name else "default"
         init_root_logger(username)
-        self.observations = {title.value: "" for title in AgentObservations}
 
         self.state = CustomAgentState(task=task)
         self.add_infos = add_infos
@@ -281,22 +265,6 @@ class CustomAgent(Agent):
         logger.info(f"[PLAYWRIGHT] >>>>>>>>>>>")
         logger.info(f"[PLAYWRIGHT] Frame {page}")
         self.curr_page = page
-
-    def _is_new_page(self, old_page: str, new_page: str) -> bool:
-        """Check if the new page is different from the old page"""
-        try:
-            is_new_page = IsNewPage().invoke(
-                model=self.llm,
-                model_name=self.model_name,
-                prompt_args={
-                    "new_page": new_page,
-                    "old_page": old_page,
-                },
-            )
-            return is_new_page.is_new_page
-        except Exception as e:
-            logger.error(f"Error in _is_new_page: {e}")
-            return False
 
     def _log_response(
         self,
@@ -403,7 +371,7 @@ class CustomAgent(Agent):
         step_info: CustomAgentStepInfo,
         page_contents: str,
         curr_url: str,
-        next_goal: str,
+        next_goal: str, 
     ):
         """Update agent state with results from actions"""
 
@@ -433,7 +401,7 @@ class CustomAgent(Agent):
         self,
         curr_page_contents: str,
         cur_url: str,
-        step_number: int16
+        step_number: int
     ) -> Tuple[str, Optional[str]]:
         prev_page_contents = self.state.prev_page_contents
         prev_plan = self.state.plan
@@ -455,17 +423,24 @@ class CustomAgent(Agent):
             logger.info(f"[PLAN] Generated plan: {self.state.plan}")
             return new_task, None
         
+
+        logger.info(f"[SUBPAGES]: {[page[2] for page in self.sub_pages]}")
+
         # TODO: check that:
         # - eval passes for the navigation back task
         # - this is used to update / check the planned task
-        is_new_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal)
-        if is_new_page == NewPageStatus.NEW_PAGE:
-            new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(prev_page_contents=prev_page_contents)
+        nav_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal, self.sub_pages)
+        if nav_page.page_type == NewPageStatus.NEW_PAGE:
+            new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(
+                prev_url=prev_url,
+                prev_page_contents=prev_page_contents
+            )
+            # self.pages.append(cur_url)
 
             logger.info(f"[PLAN]: New page, navigating back from {cur_url}")
             return new_task, self.state.task
 
-        elif is_new_page == NewPageStatus.UPDATED_PAGE:
+        elif nav_page.page_type == NewPageStatus.UPDATED_PAGE:
             # TODO: maybe need to rework should backnavigation to be smarter than default to back-navigation
             # -> ties into how we should use memory -> remembering back-navigation from page
             # TODO: need to set a status for when we navigate back from a page
@@ -476,6 +451,7 @@ class CustomAgent(Agent):
                 self.llm, curr_page_contents, prev_page_contents, prev_plan, self.state.last_action
             )
             new_task = PLANNING_TASK_TEMPLATE.format(plan=self.state.plan)
+            self.sub_pages.append((cur_url, curr_page_contents, nav_page.name))
 
             logger.info(f"[PLAN] Updated plan: {self.state.plan}")
             return new_task, None
