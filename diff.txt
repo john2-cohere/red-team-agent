@@ -1,0 +1,472 @@
+diff --git a/eval/ctf_server/juice_shop/eval_discovery.py b/eval/ctf_server/juice_shop/eval_discovery.py
+index c74ab78..cd8292b 100644
+--- a/eval/ctf_server/juice_shop/eval_discovery.py
++++ b/eval/ctf_server/juice_shop/eval_discovery.py
+@@ -75,5 +75,5 @@ if __name__ == "__main__":
+     import asyncio
+     from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_URLS
+ 
+-    eval_client = DiscoveryEvalClient(max_steps=7, targeted_vulns=JUICESHOP_DISCOVERY_URLS)
++    eval_client = DiscoveryEvalClient(max_steps=20, targeted_vulns=JUICESHOP_DISCOVERY_URLS)
+     asyncio.run(start_agent(AGENT_PROMPT, eval_client=eval_client))
+diff --git a/src/agent/custom_agent.py b/src/agent/custom_agent.py
+index f6dddd8..e0a6b31 100644
+--- a/src/agent/custom_agent.py
++++ b/src/agent/custom_agent.py
+@@ -51,7 +51,7 @@ from playwright.sync_api import Request, Response
+ from json_repair import repair_json
+ from src.utils.agent_state import AgentState
+ from src.agent.client import AgentClient
+-from src.utils import retry_async, RetryError
++from src.utils import retry_async, RetryError, EarlyShutdown
+ 
+ from eval.ctf_server.client import EvalClient
+ 
+@@ -72,6 +72,7 @@ from .discovery import (
+     update_plan, 
+     generate_plan, 
+     determine_new_page,
++    check_plan_completion,
+     NewPageStatus, 
+     NavigationPage,
+     PLANNING_TASK_TEMPLATE,
+@@ -404,7 +405,7 @@ class CustomAgent(Agent):
+         step_number: int
+     ) -> Tuple[str, Optional[str]]:
+         prev_page_contents = self.state.prev_page_contents
+-        prev_plan = self.state.plan
++        curr_plan = self.state.plan
+         prev_url = self.state.prev_url
+         eval_prev_goal = self.state.eval_prev_goal
+         prev_goal = self.state.prev_goal
+@@ -416,20 +417,26 @@ class CustomAgent(Agent):
+         # if no plan generate plan
+         # only generate plan once we have navigated to a page
+         # skip the browser intiializtion phase where the
+-        if not self.state.plan and curr_page_contents and not prev_page_contents:
+-            self.state.plan = generate_plan(self.llm, curr_page_contents)
+-            new_task = PLANNING_TASK_TEMPLATE.format(plan=self.state.plan)
+-
+-            logger.info(f"[PLAN] Generated plan: {self.state.plan}")
++        if not curr_plan and curr_page_contents and not prev_page_contents:
++            curr_plan = generate_plan(self.llm, curr_page_contents)
++            self.state.plan = curr_plan
++            new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
++            logger.info(f"[PLAN] Generated plan: {curr_plan}")
+             return new_task, None
+         
+-
+         logger.info(f"[SUBPAGES]: {[page[2] for page in self.sub_pages]}")
+ 
++        # TODO: rewrite this plan updating logic, repeating ourselves too much here!
++        curr_plan = check_plan_completion(self.llm, curr_plan, prev_page_contents, curr_page_contents, prev_goal)
++        self.state.plan = curr_plan
++        logger.info(f"[PLAN]: {curr_plan}")
++
+         # TODO: check that:
+         # - eval passes for the navigation back task
+         # - this is used to update / check the planned task
+-        nav_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal, self.sub_pages)
++        nav_page = determine_new_page(
++            self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal, self.sub_pages
++        )
+         if nav_page.page_type == NewPageStatus.NEW_PAGE:
+             new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(
+                 prev_url=prev_url,
+@@ -447,13 +454,14 @@ class CustomAgent(Agent):
+             # TODO: compare to naive results
+             # TODO: explicitly tell it to use nested subplan structure
+             # TODO: tell it to not to refer to interactive elements by their index
+-            self.state.plan = update_plan(
+-                self.llm, curr_page_contents, prev_page_contents, prev_plan, self.state.last_action
++            curr_plan = update_plan(
++                self.llm, curr_page_contents, prev_page_contents, curr_plan, self.state.last_action
+             )
+-            new_task = PLANNING_TASK_TEMPLATE.format(plan=self.state.plan)
++            self.state.plan = curr_plan
++            new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
+             self.sub_pages.append((cur_url, curr_page_contents, nav_page.name))
+ 
+-            logger.info(f"[PLAN] Updated plan: {self.state.plan}")
++            logger.info(f"[PLAN] Updated plan: {curr_plan}")
+             return new_task, None
+         else:
+             logger.info("[PLAN]: No task updates")
+@@ -569,14 +577,15 @@ class CustomAgent(Agent):
+             if replace_task:
+                 self.state.task = replace_task
+ 
+-        except InterruptedError:
+-            logger.debug("Agent paused")
++        except (InterruptedError, EarlyShutdown):
++            logger.info("Shutdown called by agent")
+             self.state.last_result = [
+                 ActionResult(
+                     error="The agent was paused - now continuing actions might need to be repeated",
+                     include_in_memory=True,
+                 )
+             ]
++            early_shutdown = True
+             return early_shutdown
+ 
+         except Exception as e:
+@@ -677,14 +686,15 @@ class CustomAgent(Agent):
+                     logger.info("Early shutdown")
+                     break
+ 
+-                if self.state.history.is_done():
+-                    if self.settings.validate_output and step < max_steps - 1:
+-                        if not await self._validate_output():
+-                            continue
++                # TODO: honestly dont quite understand the logic here but knows that it triggers early shutdown
++                # if self.state.history.is_done():
++                #     if self.settings.validate_output and step < max_steps - 1:
++                #         if not await self._validate_output():
++                #             continue
+ 
+-                    logger.info("Final response validated by agent")
+-                    await self.log_completion()
+-                    break
++                #     logger.info("Final response validated by agent")
++                #     await self.log_completion()
++                #     break
+             else:
+                 logger.info("❌ Failed to complete task in maximum steps")
+                 if not self.state.extracted_content:
+diff --git a/src/agent/discovery.py b/src/agent/discovery.py
+index 9a83a61..ed97190 100644
+--- a/src/agent/discovery.py
++++ b/src/agent/discovery.py
+@@ -11,7 +11,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
+ from browser_use.controller.registry.views import ActionModel
+ from browser_use.agent.views import ActionResult
+ 
+-from src.utils import dump_llm_messages_pretty
++from src.utils import dump_llm_messages_pretty, retry_sync, EarlyShutdown
+ 
+ from logging import getLogger
+ 
+@@ -84,15 +84,14 @@ class Plan(BaseModel):
+ 
+     def __str__(self):
+         repr = "\n"
+-        for plan in self.plan_items:
++        for i, plan in enumerate(self.plan_items):
+             # clean [ ] generated by model
+             plan.plan = plan.plan.replace("[ ] ", "")
+ 
+             checkbox = "[ ]" if not plan.completed else "[*]"
+-            repr += checkbox + "   " + plan.plan + "\n"
++            repr += f"{i}) " + checkbox + "   " + plan.plan + "\n"
+         return repr
+ 
+-# TODO: dump the ActionModel schema here as well?
+ PLAN_PREAMBLE = """
+ Your task is to fully explore and discover every single page of a web application
+ To accomplish this, you should try to trigger as many functionalities on the page as possible
+@@ -109,7 +108,14 @@ Here are some strategies to guide your interaction:
+ Here are some strategies to help you generate a plan:
+ - each plan_item should only cover one action
+ - do not reference element indices in your plant_items
+-""" 
++
++Here are some requirements around generating a plan-item:
++- generate your plan as a plain sentence without any preceding notation
++DO: "Do this ..."
++NOT: "1) [*] Do this ..."
++- if updating a plan, make sure the generated items are in the same order
++- do not delete plan-items
++"""
+ 
+ def generate_plan(llm: BaseChatModel, page_contents: str):
+     PLAN_PROMPT = """
+@@ -131,13 +137,15 @@ Formulate a plan for interacting with the visible elements on the page. You shou
+ 
+ 
+ # TODO: we may want to use message manager for this to get access to all previous actions
++# TODO: change this function to output a series of diff actions to apply rather generating plans wholesale
++@retry_sync(max_retries=3, exceptions=(Exception, ValueError), exc_class=EarlyShutdown)
+ def update_plan(
+     llm: BaseChatModel,
+     curr_page_contents: str,
+     prev_page_contents: str,
+-    prev_plan: str,
++    prev_plan: Plan,
+     last_action: List[ActionModel],
+-):
++) -> Plan:
+     UPDATE_PLAN_PROMPT = """
+ A plan was created to accomplish the goals above.
+ Here is the original plan:
+@@ -152,10 +160,12 @@ Here is the original plan:
+             "role": "user",
+             "content": """
+ Your goal is to update the plan if nessescary. This should happen for the following reasons:
+-1. to check off a completed plan item
+-2. the page has been dynamically updated, and a modification to the plan is required
++1. the page has been dynamically updated, and a modification to the plan is required
+ 
+-New items should be added to the beginning of the plan
++Here are some requirements for updating plans:
++- you can ONLY ADD plan-items
++- you can NOT DELETE plan-items
++- you can NOT MODIFY plan-items
+ 
+ Here is the previous page:
+ {prev_page_contents}
+@@ -179,7 +189,29 @@ Return the newly updated plan
+ 
+     res = llm.invoke(LLM_MSGS, response_format=Plan.model_schema)
+     res = json.loads(res.content)
+-    return Plan(**res)
++    new_plan = Plan(**res)
++
++    # Validate plan item positions
++    prev_items = [item.plan for item in prev_plan.plan_items]
++    new_items = [item.plan for item in new_plan.plan_items]
++
++    # Find new items and their insertion points
++    new_item_indices = []
++    offset = 0
++    
++    for i, item in enumerate(new_items):
++        if item not in prev_items:
++            new_item_indices.append(i)
++            offset += 1
++        else:
++            # Check if original item maintains relative position
++            orig_idx = prev_items.index(item)
++            expected_idx = orig_idx + offset
++            if i != expected_idx:
++                raise Exception(f"Plan item '{item}' is out of order. Expected index {expected_idx}, got {i}")
++
++    logger.info(f"[PLAN UPDATE] Added {len(new_item_indices)} new items at positions {new_item_indices}")
++    return new_plan
+ 
+ class NewPageStatus(str, enum.Enum):
+     SAME_PAGE = "same_page"
+@@ -218,7 +250,10 @@ def determine_new_page(
+     subpages: List[Tuple[str, str, str]],
+ ) -> NavigationPage:
+     if curr_page_contents == prev_page_contents:
+-        return NewPageStatus.SAME_PAGE
++        return NavigationPage(
++            page_type=NewPageStatus.NEW_PAGE,
++            name=""
++        )
+ 
+     # Check if this matches any previously seen subpages
+     highest_match = 0
+@@ -279,30 +314,68 @@ Now make your choices
+ 
+     return page
+ 
++class CompletePlan(BaseModel):
++    completed: List[int]
++    model_schema: ClassVar[Dict] = {
++        "type": "json_object",
++        "schema": {
++            "type": "object",
++            "required": ["completed"],
++            "properties": {
++                "completed": {
++                    "type": "array",
++                    "items": {
++                        "type": "integer",
++                        "description": "The indices of completed plan items"
++                    }
++                }
++            }
++        }
++    }
+ 
+-# # TODO: technically we can use evaluation here if it was consistent instead of using
+-# # comparing the prev and curr page contents
+-# def check_plan(
+-#     plan: Plan, 
+-#     prev_page_contents: str,
+-#     curr_page_contents: str, 
+-#     prev_goal: str
+-# ):
+-#     CHECK_PLAN = """
+-# You are a web agent that is tasked with accomplishing some browser navigation goals
++# TODO: technically we can use evaluation here if it was consistent instead of using
++# comparing the prev and curr page contents
++@retry_sync(max_retries=3, exceptions=(Exception), exc_class=EarlyShutdown)
++def check_plan_completion(
++    llm: BaseChatModel,
++    plan: Plan, 
++    prev_page_contents: str,
++    curr_page_contents: str, 
++    prev_goal: str
++) -> Plan:
++    CHECK_PLAN = """
++You are a web agent that is tasked with accomplishing some browser navigation goals
+ 
+-# Here is the plan you are following:
+-# {plan}
++Here is the plan you are following:
++{plan}
+ 
+-# Here is the previous page:
+-# {prev_page_contents}
++Here is the previous page:
++{prev_page_contents}
+ 
+-# Here is the current page:
+-# {curr_page_contents}
++Here is the current page:
++{curr_page_contents}
+ 
+-# Here is the action that you previously executed:
+-# {prev_goal}
++Here is the action that you previously executed:
++{prev_goal}
++
++Give your output as a list of completed plan item indices
++""".format(
++        plan=plan,
++        prev_page_contents=prev_page_contents,
++        curr_page_contents=curr_page_contents,
++        prev_goal=prev_goal
++    )
++
++    LLM_MSGS = [{"role": "user", "content": CHECK_PLAN}]
++
++    logger.info(f"[PROMPT CHECK PLAN]: \n{dump_llm_messages_pretty(LLM_MSGS)}")
++
++    res = llm.invoke(LLM_MSGS, response_format=CompletePlan.model_schema)
++    res = json.loads(res.content)
++    completed = CompletePlan(**res)
+ 
+-# Determine 
++    # Update completed status in plan
++    for idx in completed.completed:
++        plan.plan_items[idx].completed = True
+ 
+-# """
+\ No newline at end of file
++    return plan
+\ No newline at end of file
+diff --git a/src/utils/utils.py b/src/utils/utils.py
+index ce08b0c..0421257 100644
+--- a/src/utils/utils.py
++++ b/src/utils/utils.py
+@@ -8,7 +8,7 @@ import json
+ import traceback
+ import difflib
+ from pathlib import Path
+-from typing import Any, Callable, Dict, Optional, TypeVar, Union
++from typing import Any, Callable, Dict, Optional, TypeVar, Union, Type
+ 
+ from langchain_anthropic import ChatAnthropic
+ from langchain_mistralai import ChatMistralAI
+@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
+ 
+ T = TypeVar('T')
+ 
++class EarlyShutdown(Exception):
++    pass
++
+ PROVIDER_DISPLAY_NAMES = {
+     "openai": "OpenAI",
+     "azure_openai": "Azure OpenAI",
+@@ -308,8 +311,9 @@ class RetryError(Exception):
+     """Exception raised when max retries are exceeded"""
+     pass
+ 
++
+ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float = 2.0, 
+-               exceptions: tuple = (Exception,)) -> Callable:
++               exceptions: tuple = (), exc_class: Type[Exception] = RetryError) -> Callable:
+     """
+     Retry decorator for async functions.
+     
+@@ -318,9 +322,10 @@ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float
+         delay: Initial delay between retries in seconds (default: 1.0)
+         backoff_factor: Multiplier for delay on each retry (default: 2.0)
+         exceptions: Tuple of exception types to retry on (default: (Exception,))
++        exc_class: Exception class to raise when max retries exceeded (default: RetryError)
+     
+     Usage:
+-        @retry_async(max_retries=3, delay=1.0)
++        @retry_async(max_retries=3, delay=1.0, exc_class=ConnectionError)
+         async def my_function():
+             # function implementation
+             pass
+@@ -342,22 +347,70 @@ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float
+                     last_exception = e
+                     
+                     if attempt == max_retries:
+-                        logger.error(f"Function {func.__name__} failed after {max_retries + 1} attempts. Final error: {e}")
+-                        raise RetryError(f"Max retries ({max_retries}) exceeded") from e
++                        logger.info(f"Function {func.__name__} failed after {max_retries + 1} attempts. Final error: {e}")
++                        raise exc_class(f"Max retries ({max_retries}) exceeded") from e
+                     
+-                    logger.warning(f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+-                    logger.warning(traceback.format_exc())
++                    logger.info(f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
++                    logger.info(traceback.format_exc())
+                     logger.info(f"Retrying in {current_delay} seconds...")
+                     
+                     await asyncio.sleep(current_delay)
+                     current_delay *= backoff_factor
+             
+             # This should never be reached, but just in case
+-            raise RetryError(f"Max retries ({max_retries}) exceeded") from last_exception
++            raise exc_class(f"Max retries ({max_retries}) exceeded") from last_exception
+             
+         return wrapper
+     return decorator
+ 
++def retry_sync(max_retries: int = 3, delay: float = 1.0, backoff_factor: float = 2.0,
++               exceptions: tuple = (), exc_class: Type[Exception] = RetryError) -> Callable:
++    """
++    Retry decorator for synchronous functions.
++    
++    Args:
++        max_retries: Maximum number of retry attempts (default: 3)
++        delay: Initial delay between retries in seconds (default: 1.0)
++        backoff_factor: Multiplier for delay on each retry (default: 2.0)
++        exceptions: Tuple of exception types to retry on (default: (Exception,))
++        exc_class: Exception class to raise when max retries exceeded (default: RetryError)
++    
++    Usage:
++        @retry_sync(max_retries=3, delay=1.0, exc_class=TimeoutError)
++        def my_function():
++            # function implementation
++            pass
++    """
++    def decorator(func: Callable[..., T]) -> Callable[..., T]:
++        @functools.wraps(func)
++        def wrapper(*args, **kwargs) -> T:
++            current_delay = delay
++            last_exception = None
++            
++            for attempt in range(max_retries + 1):  # +1 because we want max_retries attempts after the first try
++                try:
++                    result = func(*args, **kwargs)
++                    if attempt > 0:
++                        logger.info(f"Function {func.__name__} succeeded on attempt {attempt + 1}")
++                    return result
++                except exceptions as e:
++                    last_exception = e
++                    if attempt == max_retries:
++                        logger.info(f"Function {func.__name__} failed after {max_retries + 1} attempts. Final error: {e}")
++                        raise exc_class(f"Max retries ({max_retries}) exceeded") from e
++                    
++                    logger.info(f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
++                    logger.info(traceback.format_exc())
++                    logger.info(f"Retrying in {current_delay} seconds...")
++                    time.sleep(current_delay)
++                    current_delay *= backoff_factor
++            
++            # This should never be reached, but just in case
++            raise exc_class(f"Max retries ({max_retries}) exceeded") from last_exception
++        
++        return wrapper
++    return decorator
++
+ def dump_llm_messages_pretty(messages: list[dict[str, str]]) -> str:
+ 	"""
+ 	Serialize a list of LLM messages to a JSON-like string,

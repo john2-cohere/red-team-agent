@@ -51,7 +51,7 @@ from playwright.sync_api import Request, Response
 from json_repair import repair_json
 from src.utils.agent_state import AgentState
 from src.agent.client import AgentClient
-from src.utils import retry_async, RetryError
+from src.utils import retry_async, RetryError, EarlyShutdown
 
 from eval.ctf_server.client import EvalClient
 
@@ -72,6 +72,7 @@ from .discovery import (
     update_plan, 
     generate_plan, 
     determine_new_page,
+    check_plan_completion,
     NewPageStatus, 
     NavigationPage,
     PLANNING_TASK_TEMPLATE,
@@ -404,7 +405,7 @@ class CustomAgent(Agent):
         step_number: int
     ) -> Tuple[str, Optional[str]]:
         prev_page_contents = self.state.prev_page_contents
-        prev_plan = self.state.plan
+        curr_plan = self.state.plan
         prev_url = self.state.prev_url
         eval_prev_goal = self.state.eval_prev_goal
         prev_goal = self.state.prev_goal
@@ -416,20 +417,26 @@ class CustomAgent(Agent):
         # if no plan generate plan
         # only generate plan once we have navigated to a page
         # skip the browser intiializtion phase where the
-        if not self.state.plan and curr_page_contents and not prev_page_contents:
-            self.state.plan = generate_plan(self.llm, curr_page_contents)
-            new_task = PLANNING_TASK_TEMPLATE.format(plan=self.state.plan)
-
-            logger.info(f"[PLAN] Generated plan: {self.state.plan}")
+        if not curr_plan and curr_page_contents and not prev_page_contents:
+            curr_plan = generate_plan(self.llm, curr_page_contents)
+            self.state.plan = curr_plan
+            new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
+            logger.info(f"[PLAN] Generated plan: {curr_plan}")
             return new_task, None
         
-
         logger.info(f"[SUBPAGES]: {[page[2] for page in self.sub_pages]}")
+
+        # TODO: rewrite this plan updating logic, repeating ourselves too much here!
+        curr_plan = check_plan_completion(self.llm, curr_plan, prev_page_contents, curr_page_contents, prev_goal)
+        self.state.plan = curr_plan
+        logger.info(f"[PLAN]: {curr_plan}")
 
         # TODO: check that:
         # - eval passes for the navigation back task
         # - this is used to update / check the planned task
-        nav_page = determine_new_page(self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal, self.sub_pages)
+        nav_page = determine_new_page(
+            self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal, self.sub_pages
+        )
         if nav_page.page_type == NewPageStatus.NEW_PAGE:
             new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(
                 prev_url=prev_url,
@@ -447,13 +454,14 @@ class CustomAgent(Agent):
             # TODO: compare to naive results
             # TODO: explicitly tell it to use nested subplan structure
             # TODO: tell it to not to refer to interactive elements by their index
-            self.state.plan = update_plan(
-                self.llm, curr_page_contents, prev_page_contents, prev_plan, self.state.last_action
+            curr_plan = update_plan(
+                self.llm, curr_page_contents, prev_page_contents, curr_plan, self.state.last_action
             )
-            new_task = PLANNING_TASK_TEMPLATE.format(plan=self.state.plan)
+            self.state.plan = curr_plan
+            new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
             self.sub_pages.append((cur_url, curr_page_contents, nav_page.name))
 
-            logger.info(f"[PLAN] Updated plan: {self.state.plan}")
+            logger.info(f"[PLAN] Updated plan: {curr_plan}")
             return new_task, None
         else:
             logger.info("[PLAN]: No task updates")
@@ -569,14 +577,15 @@ class CustomAgent(Agent):
             if replace_task:
                 self.state.task = replace_task
 
-        except InterruptedError:
-            logger.debug("Agent paused")
+        except (InterruptedError, EarlyShutdown):
+            logger.info("Shutdown called by agent")
             self.state.last_result = [
                 ActionResult(
                     error="The agent was paused - now continuing actions might need to be repeated",
                     include_in_memory=True,
                 )
             ]
+            early_shutdown = True
             return early_shutdown
 
         except Exception as e:
@@ -677,14 +686,15 @@ class CustomAgent(Agent):
                     logger.info("Early shutdown")
                     break
 
-                if self.state.history.is_done():
-                    if self.settings.validate_output and step < max_steps - 1:
-                        if not await self._validate_output():
-                            continue
+                # TODO: honestly dont quite understand the logic here but knows that it triggers early shutdown
+                # if self.state.history.is_done():
+                #     if self.settings.validate_output and step < max_steps - 1:
+                #         if not await self._validate_output():
+                #             continue
 
-                    logger.info("Final response validated by agent")
-                    await self.log_completion()
-                    break
+                #     logger.info("Final response validated by agent")
+                #     await self.log_completion()
+                #     break
             else:
                 logger.info("❌ Failed to complete task in maximum steps")
                 if not self.state.extracted_content:

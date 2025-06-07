@@ -8,7 +8,7 @@ import json
 import traceback
 import difflib
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
+from typing import Any, Callable, Dict, Optional, TypeVar, Union, Type
 
 from langchain_anthropic import ChatAnthropic
 from langchain_mistralai import ChatMistralAI
@@ -22,6 +22,9 @@ from .llm import DeepSeekR1ChatOpenAI, DeepSeekR1ChatOllama
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+class EarlyShutdown(Exception):
+    pass
 
 PROVIDER_DISPLAY_NAMES = {
     "openai": "OpenAI",
@@ -308,8 +311,9 @@ class RetryError(Exception):
     """Exception raised when max retries are exceeded"""
     pass
 
+
 def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float = 2.0, 
-               exceptions: tuple = (Exception,)) -> Callable:
+               exceptions: tuple = (), exc_class: Type[Exception] = RetryError) -> Callable:
     """
     Retry decorator for async functions.
     
@@ -318,9 +322,10 @@ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float 
         delay: Initial delay between retries in seconds (default: 1.0)
         backoff_factor: Multiplier for delay on each retry (default: 2.0)
         exceptions: Tuple of exception types to retry on (default: (Exception,))
+        exc_class: Exception class to raise when max retries exceeded (default: RetryError)
     
     Usage:
-        @retry_async(max_retries=3, delay=1.0)
+        @retry_async(max_retries=3, delay=1.0, exc_class=ConnectionError)
         async def my_function():
             # function implementation
             pass
@@ -342,19 +347,67 @@ def retry_async(max_retries: int = 3, delay: float = 1.0, backoff_factor: float 
                     last_exception = e
                     
                     if attempt == max_retries:
-                        logger.error(f"Function {func.__name__} failed after {max_retries + 1} attempts. Final error: {e}")
-                        raise RetryError(f"Max retries ({max_retries}) exceeded") from e
+                        logger.info(f"Function {func.__name__} failed after {max_retries + 1} attempts. Final error: {e}")
+                        raise exc_class(f"Max retries ({max_retries}) exceeded") from e
                     
-                    logger.warning(f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
-                    logger.warning(traceback.format_exc())
+                    logger.info(f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                    logger.info(traceback.format_exc())
                     logger.info(f"Retrying in {current_delay} seconds...")
                     
                     await asyncio.sleep(current_delay)
                     current_delay *= backoff_factor
             
             # This should never be reached, but just in case
-            raise RetryError(f"Max retries ({max_retries}) exceeded") from last_exception
+            raise exc_class(f"Max retries ({max_retries}) exceeded") from last_exception
             
+        return wrapper
+    return decorator
+
+def retry_sync(max_retries: int = 3, delay: float = 1.0, backoff_factor: float = 2.0,
+               exceptions: tuple = (), exc_class: Type[Exception] = RetryError) -> Callable:
+    """
+    Retry decorator for synchronous functions.
+    
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3)
+        delay: Initial delay between retries in seconds (default: 1.0)
+        backoff_factor: Multiplier for delay on each retry (default: 2.0)
+        exceptions: Tuple of exception types to retry on (default: (Exception,))
+        exc_class: Exception class to raise when max retries exceeded (default: RetryError)
+    
+    Usage:
+        @retry_sync(max_retries=3, delay=1.0, exc_class=TimeoutError)
+        def my_function():
+            # function implementation
+            pass
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            current_delay = delay
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):  # +1 because we want max_retries attempts after the first try
+                try:
+                    result = func(*args, **kwargs)
+                    if attempt > 0:
+                        logger.info(f"Function {func.__name__} succeeded on attempt {attempt + 1}")
+                    return result
+                except exceptions as e:
+                    last_exception = e
+                    if attempt == max_retries:
+                        logger.info(f"Function {func.__name__} failed after {max_retries + 1} attempts. Final error: {e}")
+                        raise exc_class(f"Max retries ({max_retries}) exceeded") from e
+                    
+                    logger.info(f"Function {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                    logger.info(traceback.format_exc())
+                    logger.info(f"Retrying in {current_delay} seconds...")
+                    time.sleep(current_delay)
+                    current_delay *= backoff_factor
+            
+            # This should never be reached, but just in case
+            raise exc_class(f"Max retries ({max_retries}) exceeded") from last_exception
+        
         return wrapper
     return decorator
 
