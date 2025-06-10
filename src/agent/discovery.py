@@ -14,9 +14,10 @@ from browser_use.agent.views import ActionResult
 
 from src.utils import dump_llm_messages_pretty, retry_sync, EarlyShutdown
 
+from pentest_bot.agent.logger import FULL_REQUEST_LOG_NAME
 from logging import getLogger
 
-logger = getLogger(__name__)
+logger = getLogger(FULL_REQUEST_LOG_NAME)
 
 UNDO_NAVIGATION_TASK_TEMPLATE = """
 You have successfully visited the new page
@@ -112,12 +113,13 @@ class Plan(BaseModel):
         for op in ops:
             op.op(self)
 
+
 class AddPlanItem(BaseModel):
     plan_item: PlanItem
     index: int
 
     model_schema: ClassVar[Dict] = {
-        "type": "json_object",
+        "type": "object",
         "schema": {
             "type": "object",
             "required": ["plan_item", "index"],
@@ -132,6 +134,24 @@ class AddPlanItem(BaseModel):
         plan.plan_items.insert(self.index, self.plan_item)
         return plan
 
+# TODO: figure out if its because items needs to not be a nested things
+class Operations(BaseModel):
+	operations: List[AddPlanItem]
+
+	model_schema: ClassVar[Dict] = {
+		"type": "json_object",
+		"schema": {
+			"type": "object",
+			"required": ["operations"],
+			"properties": {
+				"operations": {
+					"type": "array",
+					# ⬇️ only the inner schema, no wrapper
+					"items": AddPlanItem.model_schema["schema"]
+				}
+			}
+		}
+	}
 
 PLAN_PREAMBLE = """
 Your task is to fully explore and discover every single page of a web application
@@ -156,6 +176,8 @@ DO: "Do this ..."
 NOT: "1) [*] Do this ..."
 - if updating a plan, make sure the generated items are in the same order
 - do not delete plan-items
+- do not add instructions for going back to a previous navigation goal
+- do not add plan-items that cover the same actions as pre-existing ones
 """
 
 def generate_plan(llm: BaseChatModel, page_contents: str):
@@ -227,27 +249,15 @@ Return the newly updated plan
 
     logger.info(f"[PROMPT UPDATE PLAN]: \n{dump_llm_messages_pretty(LLM_MSGS)}")
 
-    res = llm.invoke(LLM_MSGS, response_format=Plan.model_schema)
+    res = llm.invoke(LLM_MSGS, response_format=Operations.model_schema)
     res = json.loads(res.content)
-    new_plan = Plan(**res)
-
-    prev_items = [item.plan for item in prev_plan.plan_items]
-    new_items = [item.plan for item in new_plan.plan_items]
+    plan_ops = Operations(**res)
     
-    add_operations = []
+    logger.info(f"[PLAN UPDATE] Added {len(plan_ops.operations)} plan items")
+    for op in plan_ops.operations:
+        logger.info(f"[PLAN UPDATE] AddPlanItem: {op.plan_item.plan}")
     
-    for i, item in enumerate(new_items):
-        if item not in prev_items:
-            add_operations.append(
-                AddPlanItem(
-                    plan_item=new_plan.plan_items[i],
-                    index=i
-                )
-            )
-
-    logger.info(f"[PLAN UPDATE] Generated {len(add_operations)} AddPlanItem operations")
-    
-    prev_plan.apply(add_operations)
+    prev_plan.apply(plan_ops.operations)
     return prev_plan
     
 class NewPageStatus(str, enum.Enum):
@@ -285,10 +295,12 @@ def determine_new_page(
     prev_url: str,
     prev_goal: str,
     subpages: List[Tuple[str, str, str]],
+    homepage_url: str,
+    homepage_contents: str,
 ) -> NavigationPage:
     if curr_page_contents == prev_page_contents:
         return NavigationPage(
-            page_type=NewPageStatus.NEW_PAGE,
+            page_type=NewPageStatus.SAME_PAGE,
             name=""
         )
 
@@ -323,12 +335,16 @@ Here is the PREV_PAGE:
 URL: {prev_url}
 {prev_page_contents}
 
+Here is the HOMEPAGE:
+URL: {homepage_url}
+{homepage_contents}
+
 Here is the action that was executed to get from the previous goal to here:
 {prev_goal}
 
 Given the different views, determine if the CURR_PAGE is a:
 
-1. new_page: different page of the application
+1. new_page: different from the HOMEPAGE
 2. updated_page: same page of the application, but with an updated view (ie. submenu expansion, pop-up)
 - if it is an updated_page, then also return the name of updated_page
 
