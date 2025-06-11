@@ -231,13 +231,7 @@ def update_plan(
 A plan was created to accomplish the goals above.
 Here is the original plan:
 {prev_plan}
-"""
-    UPDATE_PLAN_PROMPT = PLAN_PREAMBLE + UPDATE_PLAN_PROMPT
-    messages = [
-        {"role": "system", "content": UPDATE_PLAN_PROMPT},
-        {
-            "role": "user",
-            "content": f"""
+
 Your goal is to update the plan if nessescary. This should happen for the following reasons:
 1. the page has been dynamically updated, and a modification to the plan is required
 
@@ -255,8 +249,13 @@ Here is the current page:
 Here are the actions to affect this change:
 {eval_prev_goal}
 
-Return the newly updated plan
+Return a list of plan-items to be added to the plan
 """
+    UPDATE_PLAN_PROMPT = PLAN_PREAMBLE + UPDATE_PLAN_PROMPT
+    messages = [
+        {
+            "role": "user",
+            "content": UPDATE_PLAN_PROMPT
         },
     ]
 
