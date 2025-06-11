@@ -107,7 +107,10 @@ POLL_INTERVAL = 0.5  # how often we poll internal state
 #     curr_page: 
 #     all_pages: List[Page]
 
-     
+class LLMClients(str, Enum):
+    COHERE = "cohere"
+    DEEPSEEK = "deepseek"
+    DEEPSEEK_REASONER = "deepseek_reasoner"
 
 # Planning Agent:
 # - need to detect when page has changed to
@@ -218,7 +221,6 @@ class CustomAgent(Agent):
         print(f"Setting up agent logger for {agent_name}")
         self.agent_log, self.full_log = self._init_loggers(agent_name)
         
-        self.sub_pages = []
         self.homepage_url = ""
         self.homepage_contents = ""
 
@@ -265,6 +267,9 @@ class CustomAgent(Agent):
 
         # State variables used for step()
         self.step_http_msgs = []
+
+    def get_agent_state(self) -> CustomAgentState:
+        return self.state
 
     def _init_loggers(self, log_name: str = "default-agent"):
         agent_log, full_log = setup_agent_logger(log_name, log_name=log_name)
@@ -445,10 +450,12 @@ class CustomAgent(Agent):
             # init homepage
             self.homepage_url = cur_url
             self.homepage_contents = curr_page_contents
+            self.state.pages.append(cur_url)
+            
             self.full_log(f"[PLAN] Generated plan: {curr_plan}")
             return new_task, None
         
-        self.agent_log(f"[SUBPAGES]: {[page[2] for page in self.sub_pages]}")
+        self.agent_log(f"[SUBPAGES]: {[page[2] for page in self.state.subpages]}")
 
         # TODO: parallelize these two
         curr_plan = check_plan_completion(
@@ -466,7 +473,7 @@ class CustomAgent(Agent):
             cur_url, 
             prev_url, 
             prev_goal, 
-            self.sub_pages,
+            self.state.subpages,
             self.homepage_contents,
             self.homepage_url
         )
@@ -477,7 +484,7 @@ class CustomAgent(Agent):
                 prev_url=prev_url,
                 prev_page_contents=prev_page_contents
             )
-            # self.pages.append(cur_url)
+            self.state.pages.append(cur_url)
 
             self.agent_log(f"[PLAN]: New page, navigating back from {cur_url}")
             return new_task, self.state.task
@@ -494,7 +501,7 @@ class CustomAgent(Agent):
             )
             self.state.plan = curr_plan
             new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
-            self.sub_pages.append((cur_url, curr_page_contents, nav_page.name))
+            self.state.subpages.append((cur_url, curr_page_contents, nav_page.name))
 
             self.agent_log(f"[PLAN] Updated plan: {curr_plan}")
             return new_task, None
@@ -581,10 +588,6 @@ class CustomAgent(Agent):
             )
             if self.agent_client:
                 await self._update_server(self.step_http_msgs, browser_actions)
-            if self.eval_client:
-                early_shutdown = await self.eval_client.update_challenge_status(
-                    step_info.step_number, self.step_http_msgs, browser_actions
-                )
                 
             self._update_state(
                 result, 
@@ -615,6 +618,11 @@ class CustomAgent(Agent):
             # - if replace
             if replace_task:
                 self.state.task = replace_task
+
+            if self.eval_client:
+                early_shutdown = await self.eval_client.update_challenge_status(
+                    step_info.step_number, self.step_http_msgs, browser_actions
+                )
 
         except (InterruptedError, EarlyShutdown):
             self.agent_log("Shutdown called by agent")

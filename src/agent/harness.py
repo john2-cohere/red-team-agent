@@ -177,3 +177,6 @@ class AgentHarness:
             return d
             
         return remove_screenshots(self._history)
+
+    def get_agents(self) -> List[CustomAgent]:
+        return self._agents

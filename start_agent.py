@@ -56,19 +56,23 @@ async def start_agent(
     }
     shared_cfg = { **shared_cfg, **agent_args }
     
-    if shared_cfg.get("eval_client", None):
-        max_steps = shared_cfg["eval_client"].max_steps
-
     # Create agent harness
     harness = AgentHarness(
         browser_profile_template=browser_profile,
         agents_config=[{"task": task, "agent_client": None}],
         common_kwargs=shared_cfg,
     )
-
+        
     try:
         # Start and run the agent
         await harness.start_all(max_steps=max_steps)
+        
+        # TODO: currently only supports single agent for eval
+        eval_client: EvalClient = shared_cfg.get("eval_client", None)
+        if eval_client:
+            agent = harness.get_agents()[0]
+            eval_client.set_agent_state(agent.get_agent_state())
+
         await harness.wait()
         
         logger.info("Agent task completed successfully")

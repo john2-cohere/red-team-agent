@@ -66,6 +66,10 @@ class CustomAgentState(BaseModel):
     prev_goal: Optional[str] = None
     eval_prev_goal: Optional[str] = None
 
+    # navigation
+    pages: List[str] = Field(default_factory=list)
+    subpages: List[str] = Field(default_factory=list)
+
     agent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     n_steps: int = 1
     consecutive_failures: int = 0

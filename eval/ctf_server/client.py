@@ -7,10 +7,11 @@ from browser_use.agent.views import AgentStepInfo
 
 from common.agent import BrowserActions
 from httplib import HTTPMessage
+from pentest_bot.agent.logger import AgentLogLevels
 
 from eval.challenges import Challenge
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(AgentLogLevels.AGENT)
 
 ChallengeType = TypeVar('ChallengeType', bound=Challenge)
 
@@ -26,6 +27,8 @@ class EvalClient(Generic[ChallengeType]):
         self._max_steps = max_steps
         self._targeted_vulns: List[ChallengeType] = targeted_vulns
         self._shutdown: Callable = None
+        # TODO: kind of jank to not initialize this in the constructor
+        self._agent_state: Any = None
 
         logger.info(f"Starting EvalClient with {self._max_steps} steps")
 
@@ -38,6 +41,12 @@ class EvalClient(Generic[ChallengeType]):
         Set a shutdown function to be called when the agent is done.
         """
         self._shutdown = shutdown
+
+    def set_agent_state(self, agent_state: Any) -> None:
+        """
+        Set the agent state to be used for the eval.
+        """
+        self._agent_state = agent_state
 
     def all_targets_solved(self, steps_taken: int) -> bool:
         """True iff every targeted Challenge has solved == True."""
@@ -61,6 +70,13 @@ class EvalClient(Generic[ChallengeType]):
         """Checks if new challenges have been completed"""
         pass
 
+    def log_completion(self):
+        # Print status of completed and missing vulnerabilities
+        solved_vulns = [v for v in self._targeted_vulns if v.solved]
+
+        logger.info("[EVAL]: === Vulnerability Status ===")
+        logger.info(f"[EVAL]: Completed ({len(solved_vulns)}/{len(self._targeted_vulns)}):")       
+
     async def update_challenge_status(
         self,
         steps_taken: int,
@@ -69,11 +85,8 @@ class EvalClient(Generic[ChallengeType]):
     ):
         await self.check_completion(http_msgs, browser_actions)
         if self.all_targets_solved(steps_taken):
-            # Print status of completed and missing vulnerabilities
-            solved_vulns = [v for v in self._targeted_vulns if v.solved]
-            
-            logger.info("[EVAL]: === Vulnerability Status ===")
-            logger.info(f"[EVAL]: Completed ({len(solved_vulns)}/{len(self._targeted_vulns)}):")       
+            self.log_completion()
+
             await self._shutdown(reason="Shutdown after completing evals")
             return True
 

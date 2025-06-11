@@ -71,9 +71,22 @@ class DiscoveryEvalClient(EvalClient[DiscoveryChallengeURL]):
                     logger.info(f"[EVAL]: Vuln {vuln.name} -> VULN URL ({vuln.url}) matches MSG URL: ({msg.url})")
                     vuln.solved = True
 
+    def log_completion(self):
+        super().log_completion()
+
+        # Log total pages with duplicates
+        logger.info(f"[EVAL]: Pages visited: {len(self._agent_state.pages)} -> {self._agent_state.pages}")
+        logger.info(f"[EVAL]: Subpages visited: {len(self._agent_state.subpages)} -> {[page[2] for page in self._agent_state.subpages]}")
+
+        # Log unique pages
+        unique_pages = list(set(self._agent_state.pages))
+        unique_subpages = list(set(page[2] for page in self._agent_state.subpages))
+        logger.info(f"[EVAL]: Unique pages visited: {len(unique_pages)} -> {unique_pages}")
+        logger.info(f"[EVAL]: Unique subpages visited: {len(unique_subpages)} -> {unique_subpages}")
+
 if __name__ == "__main__":
     import asyncio
     from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_URLS
 
-    eval_client = DiscoveryEvalClient(max_steps=50, targeted_vulns=JUICESHOP_DISCOVERY_URLS)
+    eval_client = DiscoveryEvalClient(max_steps=7, targeted_vulns=JUICESHOP_DISCOVERY_URLS)
     asyncio.run(start_agent("discovery-agent", AGENT_PROMPT, eval_client=eval_client))

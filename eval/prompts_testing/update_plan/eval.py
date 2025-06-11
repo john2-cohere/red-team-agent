@@ -1,4 +1,4 @@
-from ..llm import cohere_client, deepseek_client
+from src.llm_providers import cohere_client, deepseek_client
 
 from src.agent.discovery import update_plan_with_messages
 
