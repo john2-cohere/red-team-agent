@@ -201,26 +201,43 @@ Formulate a plan for interacting with the visible elements on the page. You shou
 # TODO: we may want to use message manager for this to get access to all previous actions
 # TODO: change this function to output a series of diff actions to apply rather generating plans wholesale
 @retry_sync(max_retries=3, exceptions=(Exception, ValueError), exc_class=EarlyShutdown)
+def update_plan_with_messages(
+    llm: BaseChatModel,
+    messages: List[Dict[str, str]], 
+) -> List[AddPlanItem]:
+    """Version of update_plan that takes messages directly instead of prompt args"""
+    # logger.info(f"[PROMPT UPDATE PLAN]: \n{dump_llm_messages_pretty(messages)}")
+
+    res = llm.invoke(messages, response_format=Operations.model_schema)
+    res = json.loads(res.content)
+    plan_ops = Operations(**res)
+    
+    # logger.info(f"[PLAN UPDATE] Added {len(plan_ops.operations)} plan items")
+    # for op in plan_ops.operations:
+    #     logger.info(f"[PLAN UPDATE] AddPlanItem: {op.plan_item.plan}")
+
+    return plan_ops.operations
+
+@retry_sync(max_retries=3, exceptions=(Exception, ValueError), exc_class=EarlyShutdown)
 def update_plan(
     llm: BaseChatModel,
     curr_page_contents: str,
-    prev_page_contents: str,
+    prev_page_contents: str, 
     prev_plan: Plan,
-    last_action: List[ActionModel],
+    eval_prev_goal: str,
 ) -> Plan:
-    UPDATE_PLAN_PROMPT = """
+    """Original update_plan that builds messages from args"""
+    UPDATE_PLAN_PROMPT = f"""
 A plan was created to accomplish the goals above.
 Here is the original plan:
 {prev_plan}
-""".format(
-        prev_plan=prev_plan
-    )
+"""
     UPDATE_PLAN_PROMPT = PLAN_PREAMBLE + UPDATE_PLAN_PROMPT
-    LLM_MSGS = [
+    messages = [
         {"role": "system", "content": UPDATE_PLAN_PROMPT},
         {
             "role": "user",
-            "content": """
+            "content": f"""
 Your goal is to update the plan if nessescary. This should happen for the following reasons:
 1. the page has been dynamically updated, and a modification to the plan is required
 
@@ -236,27 +253,23 @@ Here is the current page:
 {curr_page_contents}
 
 Here are the actions to affect this change:
-{last_action}
+{eval_prev_goal}
 
 Return the newly updated plan
-""".format(
-                prev_page_contents=prev_page_contents,
-                curr_page_contents=curr_page_contents,
-                last_action=last_action,
-            ),
+"""
         },
     ]
 
-    logger.info(f"[PROMPT UPDATE PLAN]: \n{dump_llm_messages_pretty(LLM_MSGS)}")
+    logger.info(f"[PROMPT UPDATE PLAN]: \n{dump_llm_messages_pretty(messages)}")
 
-    res = llm.invoke(LLM_MSGS, response_format=Operations.model_schema)
+    res = llm.invoke(messages, response_format=Operations.model_schema)
     res = json.loads(res.content)
     plan_ops = Operations(**res)
     
     logger.info(f"[PLAN UPDATE] Added {len(plan_ops.operations)} plan items")
     for op in plan_ops.operations:
         logger.info(f"[PLAN UPDATE] AddPlanItem: {op.plan_item.plan}")
-    
+
     prev_plan.apply(plan_ops.operations)
     return prev_plan
     

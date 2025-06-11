@@ -16,6 +16,7 @@ logger = getLogger(__name__)
 API_KEY = os.getenv("COHERE_API_KEY")
 
 async def start_agent(
+        agent_name: str,
         task: str, 
         max_steps: int = 15, 
         headless: bool = False,
@@ -51,6 +52,7 @@ async def start_agent(
         "agent_prompt_class": CustomAgentMessagePrompt,
         "app_id": None,
         "close_browser": True,
+        "agent_name": agent_name,
     }
     shared_cfg = { **shared_cfg, **agent_args }
     

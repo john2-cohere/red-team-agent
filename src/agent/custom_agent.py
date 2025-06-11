@@ -1,4 +1,5 @@
 import json
+from this import d
 import traceback
 import logging
 import asyncio
@@ -59,9 +60,9 @@ from johnllm import LLMModel, LMP
 from httplib import HTTPRequest, HTTPResponse, HTTPMessage
 
 from logging import getLogger
-from logger import init_root_logger
 
 # from .state import CustomAgentOutput
+from pentest_bot.agent.logger import setup_agent_logger
 from common.agent import BrowserActions
 from .custom_views import CustomAgentOutput
 from .custom_message_manager import CustomMessageManager, CustomMessageManagerSettings
@@ -114,6 +115,7 @@ class CustomAgent(Agent):
     def __init__(
         self,
         task: str,
+        agent_name: str,
         llm: BaseChatModel,
         model_name: str = "command-a-03-2025",
         add_infos: str = "",
@@ -176,7 +178,6 @@ class CustomAgent(Agent):
         eval_client: Optional[EvalClient] = None,
         app_id: Optional[str] = None,
         close_browser: bool = False,
-        agent_name: str = "",
     ):
         if not http_handler:
             raise Exception("Must initialize CustomAgent with HTTPHandler")
@@ -214,8 +215,12 @@ class CustomAgent(Agent):
             injected_agent_state=None,
             context=context,
         )
+        print(f"Setting up agent logger for {agent_name}")
+        self.agent_log, self.full_log = self._init_loggers(agent_name)
+        
         self.sub_pages = []
-        self.pages = []
+        self.homepage_url = ""
+        self.homepage_contents = ""
 
         self.http_handler = http_handler
         self.model_name = model_name
@@ -236,7 +241,6 @@ class CustomAgent(Agent):
 
         # username = self.agent_client.username if self.agent_client else "default"
         username = self.agent_name if self.agent_name else "default"
-        init_root_logger(username)
 
         self.state = CustomAgentState(task=task)
         self.add_infos = add_infos
@@ -262,9 +266,21 @@ class CustomAgent(Agent):
         # State variables used for step()
         self.step_http_msgs = []
 
+    def _init_loggers(self, log_name: str = "default-agent"):
+        agent_log, full_log = setup_agent_logger(log_name, log_name=log_name)
+
+        def log_agent(msg: str):
+            agent_log.info(msg)
+
+        def log_full_requests(msg: str):
+            agent_log.info(msg)
+            full_log.info(msg)
+
+        return log_agent, log_full_requests
+
     def handle_page(self, page):
-        logger.info(f"[PLAYWRIGHT] >>>>>>>>>>>")
-        logger.info(f"[PLAYWRIGHT] Frame {page}")
+        self.full_log(f"[PLAYWRIGHT] >>>>>>>>>>>")
+        self.full_log(f"[PLAYWRIGHT] Frame {page}")
         self.curr_page = page
 
     def _log_response(
@@ -272,6 +288,8 @@ class CustomAgent(Agent):
         http_msgs: List[HTTPMessage],
         current_msg: BaseMessage,
         response: CustomAgentOutput,
+        curr_goal: str,
+        curr_url: str,
     ) -> None:
         """Log the model's response"""
         if "Success" in response.current_state.evaluation_previous_goal:
@@ -281,18 +299,20 @@ class CustomAgent(Agent):
         else:
             emoji = "🤷"
 
-        logger.info(f"{emoji} Eval: {response.current_state.evaluation_previous_goal}")
-        # logger.info(f"🧠 New Memory: {response.current_state.important_contents}")
-        # logger.info(f"🤔 Thought: {response.current_state.thought}")
-        logger.info(f"🎯 Next Goal: {response.current_state.next_goal}")
+        self.agent_log(f"🌐 Current URL: {curr_url}")
+        self.agent_log(f"🎯 Current Goal: {curr_goal}")
+        self.agent_log(f"{emoji} Eval: {response.current_state.evaluation_previous_goal}")
+        # self.full_log(f"🧠 New Memory: {response.current_state.important_contents}")
+        # self.full_log(f"🤔 Thought: {response.current_state.thought}")
+        self.agent_log(f"🎯 Next Goal: {response.current_state.next_goal}")
         for i, action in enumerate(response.action):
-            logger.info(
+            self.agent_log(
                 f"🛠️  Action {i + 1}/{len(response.action)}: {action.model_dump_json(exclude_unset=True)}"
             )
-        logger.info(f"[Prev Messages]: {current_msg.content}")
-        logger.info(f"Captured {len(http_msgs)} HTTP Messages")
+        self.agent_log(f"[Message]: {current_msg.content}")
+        self.agent_log(f"Captured {len(http_msgs)} HTTP Messages")
         for msg in http_msgs:
-            logger.info(f"[Agent] {msg.request.url}")
+            self.full_log(f"[Agent] {msg.request.url}")
 
     def update_step_info(
         self,
@@ -318,7 +338,7 @@ class CustomAgent(Agent):
         # ):
         #     step_info.memory += important_contents + "\n"
 
-        logger.info(f"🧠 All Memory: \n{step_info.memory}")
+        self.agent_log(f"🧠 All Memory: \n{step_info.memory}")
 
     @time_execution_async("--get_next_action")
     async def get_next_action(
@@ -333,7 +353,7 @@ class CustomAgent(Agent):
         ai_content = ai_message.content.replace("```json", "").replace("```", "")
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
-        logger.info(f"[PARSED]: ", parsed_json)
+        self.full_log(f"[PARSED]: {parsed_json}")
 
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
 
@@ -394,7 +414,7 @@ class CustomAgent(Agent):
             if not self.state.extracted_content:
                 self.state.extracted_content = step_info.memory
             result[-1].extracted_content = self.state.extracted_content
-            logger.info(f"📄 Result: {result[-1].extracted_content}")
+            self.agent_log(f"📄 Result: {result[-1].extracted_content}")
 
         self.state.consecutive_failures = 0
 
@@ -421,22 +441,37 @@ class CustomAgent(Agent):
             curr_plan = generate_plan(self.llm, curr_page_contents)
             self.state.plan = curr_plan
             new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
-            logger.info(f"[PLAN] Generated plan: {curr_plan}")
+
+            # init homepage
+            self.homepage_url = cur_url
+            self.homepage_contents = curr_page_contents
+            self.full_log(f"[PLAN] Generated plan: {curr_plan}")
             return new_task, None
         
-        logger.info(f"[SUBPAGES]: {[page[2] for page in self.sub_pages]}")
+        self.agent_log(f"[SUBPAGES]: {[page[2] for page in self.sub_pages]}")
 
-        # TODO: rewrite this plan updating logic, repeating ourselves too much here!
-        curr_plan = check_plan_completion(self.llm, curr_plan, prev_page_contents, curr_page_contents, prev_goal)
-        self.state.plan = curr_plan
-        logger.info(f"[PLAN]: {curr_plan}")
-
-        # TODO: check that:
-        # - eval passes for the navigation back task
-        # - this is used to update / check the planned task
-        nav_page = determine_new_page(
-            self.llm, curr_page_contents, prev_page_contents, cur_url, prev_url, prev_goal, self.sub_pages
+        # TODO: parallelize these two
+        curr_plan = check_plan_completion(
+            self.llm, 
+            curr_plan, 
+            prev_page_contents, 
+            curr_page_contents, 
+            prev_goal
         )
+        self.state.plan = curr_plan
+        nav_page = determine_new_page(
+            self.llm, 
+            curr_page_contents, 
+            prev_page_contents, 
+            cur_url, 
+            prev_url, 
+            prev_goal, 
+            self.sub_pages,
+            self.homepage_contents,
+            self.homepage_url
+        )
+
+        # TODO: we need to be careful to check that the last plan is not a back navigation task
         if nav_page.page_type == NewPageStatus.NEW_PAGE:
             new_task = UNDO_NAVIGATION_TASK_TEMPLATE.format(
                 prev_url=prev_url,
@@ -444,7 +479,7 @@ class CustomAgent(Agent):
             )
             # self.pages.append(cur_url)
 
-            logger.info(f"[PLAN]: New page, navigating back from {cur_url}")
+            self.agent_log(f"[PLAN]: New page, navigating back from {cur_url}")
             return new_task, self.state.task
 
         elif nav_page.page_type == NewPageStatus.UPDATED_PAGE:
@@ -455,23 +490,23 @@ class CustomAgent(Agent):
             # TODO: explicitly tell it to use nested subplan structure
             # TODO: tell it to not to refer to interactive elements by their index
             curr_plan = update_plan(
-                self.llm, curr_page_contents, prev_page_contents, curr_plan, self.state.last_action
+                self.llm, curr_page_contents, prev_page_contents, curr_plan, self.state.eval_prev_goal
             )
             self.state.plan = curr_plan
             new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
             self.sub_pages.append((cur_url, curr_page_contents, nav_page.name))
 
-            logger.info(f"[PLAN] Updated plan: {curr_plan}")
+            self.agent_log(f"[PLAN] Updated plan: {curr_plan}")
             return new_task, None
         else:
-            logger.info("[PLAN]: No task updates")
+            self.agent_log("[PLAN]: No task updates")
             # return the old task
             return self.state.task, None
 
     @time_execution_async("--step")
     async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> bool:
         """Execute one step of the task"""
-        logger.info(f"##############[ Step {self.state.n_steps} ]##############")
+        self.agent_log(f"##############[ Step {self.state.n_steps} ]##############")
         state = None
         model_output = None
         result: list[ActionResult] = []
@@ -490,7 +525,7 @@ class CustomAgent(Agent):
 
             await self._raise_if_stopped_or_paused()
 
-            # TODO: add results?
+            # TODO: should maybe move homepage init out of here?
             new_task, replace_task = await self.create_or_update_plan(
                 page_contents,
                 curr_url,
@@ -519,18 +554,18 @@ class CustomAgent(Agent):
                 # as chat history
                 self._message_manager._remove_last_state_message()
                 self._message_manager._add_message_with_tokens(output_msg)
-                logger.info(f"MESSAGE_LEN: {len(input_messages)}")
+                self.full_log(f"MESSAGE_LEN: {len(input_messages)}")
                 for msg in input_messages:
-                    logger.info(f"MESSAGE: {type(msg)}")
+                    self.full_log(f"MESSAGE: {type(msg)}")
 
                 self.update_step_info(model_output, step_info, curr_url, page_contents)
                 # update the state
                 await self._raise_if_stopped_or_paused()
 
-                logger.info(f"MESSAGE_LEN AFTER: {len(self._message_manager.get_messages())}")
+                self.full_log(f"MESSAGE_LEN AFTER: {len(self._message_manager.get_messages())}")
             except Exception as e:
                 self._message_manager._remove_last_state_message()
-                logger.info(
+                self.full_log(
                     f"LLM Parsing failed, here is the failure message => {input_messages[-1]}"
                 )
                 raise e
@@ -563,6 +598,8 @@ class CustomAgent(Agent):
                 self.step_http_msgs,
                 current_msg=input_messages[-1],
                 response=model_output,
+                curr_goal=self.state.prev_goal,
+                curr_url=curr_url,
             )
 
             # Match reference pattern for completion logging
@@ -570,15 +607,17 @@ class CustomAgent(Agent):
                 if not self.state.extracted_content:
                     self.state.extracted_content = step_info.memory
                 result[-1].extracted_content = self.state.extracted_content
-                logger.info(f"📄 Result: {result[-1].extracted_content}")
+                self.agent_log(f"📄 Result: {result[-1].extracted_content}")
 
             self.state.consecutive_failures = 0
-            # replace task if replace_task exists
+            
+            # TODO: really bug here:
+            # - if replace
             if replace_task:
                 self.state.task = replace_task
 
         except (InterruptedError, EarlyShutdown):
-            logger.info("Shutdown called by agent")
+            self.agent_log("Shutdown called by agent")
             self.state.last_result = [
                 ActionResult(
                     error="The agent was paused - now continuing actions might need to be repeated",
@@ -625,13 +664,13 @@ class CustomAgent(Agent):
         prefix = f"❌ Result failed {self.state.consecutive_failures + 1}/{self.settings.max_failures} times:\n "
 
         if isinstance(error, (ValidationError, ValueError)):
-            logger.error(f"{prefix}{error_msg}")
+            self.full_log(f"{prefix}{error_msg}")
             if "Max token limit reached" in error_msg:
                 # cut tokens from history
                 self._message_manager.settings.max_input_tokens = (
                     self.settings.max_input_tokens - 500
                 )
-                logger.info(
+                self.full_log(
                     f"Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}"
                 )
                 self._message_manager.cut_messages()
@@ -666,14 +705,14 @@ class CustomAgent(Agent):
             for step in range(max_steps):
                 # Check if we should stop due to too many failures
                 if self.state.consecutive_failures >= self.settings.max_failures:
-                    logger.error(
+                    self.agent_log(
                         f"❌ Stopping due to {self.settings.max_failures} consecutive failures"
                     )
                     break
 
                 # Check control flags before each step
                 if self.state.stopped:
-                    logger.info("Agent stopped")
+                    self.agent_log("Agent stopped")
                     break
 
                 while self.state.paused:
@@ -683,7 +722,7 @@ class CustomAgent(Agent):
 
                 shutdown = await self.step(step_info)
                 if shutdown:
-                    logger.info("Early shutdown")
+                    self.agent_log("Early shutdown")
                     break
 
                 # TODO: honestly dont quite understand the logic here but knows that it triggers early shutdown
@@ -696,7 +735,7 @@ class CustomAgent(Agent):
                 #     await self.log_completion()
                 #     break
             else:
-                logger.info("❌ Failed to complete task in maximum steps")
+                self.agent_log("❌ Failed to complete task in maximum steps")
                 if not self.state.extracted_content:
                     self.state.history.history[-1].result[
                         -1
@@ -723,14 +762,14 @@ class CustomAgent(Agent):
             logger.warning("Shutdown already in progress or completed.")
             return
 
-        logger.info(f"Initiating premature shutdown: {reason}")
+        self.agent_log(f"Initiating premature shutdown: {reason}")
         # Ensure state has 'stopped' attribute before setting
         if hasattr(self.state, "stopped"):
             self.state.stopped = True
         else:
             # If AgentState doesn't have stopped, we might need another way
             # to signal termination or handle this case.
-            logger.warning(
+            self.agent_log(
                 "Agent state does not have 'stopped' attribute. Cannot signal stop."
             )
 
@@ -762,27 +801,27 @@ class CustomAgent(Agent):
             if self.history_file and history:
                 try:
                     history.save_to_file(self.history_file)
-                    logger.info(
+                    self.agent_log(
                         f"Saved agent history to {self.history_file} during shutdown."
                     )
                 except Exception as e:
-                    logger.error(f"Failed to save history during shutdown: {e}")
+                    self.agent_log(f"Failed to save history during shutdown: {e}")
 
             # Close Browser Context
             if self.browser_context:
                 try:
                     await self.browser_context.close()
-                    logger.info("Closed browser context during shutdown.")
+                    self.agent_log("Closed browser context during shutdown.")
                 except Exception as e:
-                    logger.error(f"Error closing browser context during shutdown: {e}")
+                    self.agent_log(f"Error closing browser context during shutdown: {e}")
 
             # Close Browser
             if self.browser:
                 try:
                     await self.browser.close()
-                    logger.info("Closed browser during shutdown.")
+                    self.agent_log("Closed browser during shutdown.")
                 except Exception as e:
-                    logger.error(f"Error closing browser during shutdown: {e}")
+                    self.agent_log(f"Error closing browser during shutdown: {e}")
 
             # Generate GIF
             if self.settings.generate_gif and history:
@@ -793,18 +832,19 @@ class CustomAgent(Agent):
                         base, ext = os.path.splitext(self.settings.generate_gif)
                         output_path = f"{base}_shutdown{ext}"
 
-                    logger.info(f"Generating shutdown GIF at {output_path}")
+                    self.agent_log(f"Generating shutdown GIF at {output_path}")
                     create_history_gif(
                         task=f"{self.task} (Shutdown)",
                         history=history,
                         output_path=output_path,
                     )
                 except Exception as e:
-                    logger.error(f"Failed to generate GIF during shutdown: {e}")
+                    self.agent_log(f"Failed to generate GIF during shutdown: {e}")
 
         except Exception as e:
             # Catch errors during the shutdown cleanup process itself
-            logger.error(f"Error during agent shutdown cleanup: {e}")
-            logger.error(traceback.format_exc())
+            self.agent_log(f"Error during agent shutdown cleanup: {e}")
+            self.agent_log(traceback.format_exc())
         finally:
-            logger.info("Agent shutdown process complete.")
+            self.agent_log("Agent shutdown process complete.")
+

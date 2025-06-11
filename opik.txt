@@ -1,0 +1,58 @@
+⏺ Chain of Events: Function Input/Output Tracking to @track Decorator
+
+  Here's the complete chain of events from function input/output being tracked to the @track
+  decorator:
+
+  1. Decorator Application & Function Call
+
+  - @track decorator wraps the target function (sdks/python/src/opik/decorator/tracker.py:81)
+  - When function is called, _tracked_sync() or _tracked_async() wrapper executes
+  (base_track_decorator.py:273-319)
+
+  2. Input Capture (Before Function Execution)
+
+  - _before_call() method is invoked (base_track_decorator.py:369-407)
+  - inspect_helpers.extract_inputs() extracts function arguments using Python's inspect.signature()
+  (inspect_helpers.py:6-26)
+  - Arguments are bound and converted to a dictionary, removing self/cls parameters
+  - _start_span_inputs_preprocessor() processes inputs (tracker.py:17-45):
+    - Filters out ignored arguments if specified
+    - Creates StartSpanParameters with input data
+
+  3. Span/Trace Creation
+
+  - span_creation_handler.create_span_for_current_context() creates span/trace data structures
+  - Context storage manages the span hierarchy using contextvars (context_storage.py)
+  - Span data is added to the context stack for nested function support
+
+  4. Function Execution
+
+  - Original function executes with span data in context
+  - Any nested @track decorated functions automatically become child spans
+
+  5. Output Capture (After Function Execution)
+
+  - _after_call() method processes function output (base_track_decorator.py:409-467)
+  - _end_span_inputs_preprocessor() captures the return value (tracker.py:47-61):
+    - Wraps non-dict outputs in {"output": value} format
+    - Only captures if capture_output=True
+
+  6. Data Serialization & Client Submission
+
+  - Span data is finalized with end time and output
+  - client.span(**span_data_to_end.__dict__) sends data to the backend (base_track_decorator.py:447)
+  - Data flows through the message processing system:
+    - CreateSpanMessage queued in background streamer
+    - MessageSender.process() routes to span handler
+    - HTTP POST to /v1/private/spans endpoint
+
+  Key Components in the Flow:
+
+  1. Input Extraction: inspect_helpers.extract_inputs() → uses Python's inspect module
+  2. Processing: OpikTrackDecorator._start_span_inputs_preprocessor() → formats for tracking
+  3. Context Management: context_storage → maintains span hierarchy
+  4. Output Processing: _end_span_inputs_preprocessor() → captures return values
+  5. Backend Communication: opik_client → sends via HTTP to Opik backend
+
+  The entire flow is designed to be transparent to the user's code while providing comprehensive
+  observability of function inputs, outputs, execution time, and call hierarchy.
