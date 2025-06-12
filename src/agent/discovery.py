@@ -1,3 +1,4 @@
+# @file purpose: Defines the core data structures and interfaces for the autonomous discovery agent
 from ast import NameConstant
 from litellm.types.llms.bedrock import Self
 from numpy.char import str_len
@@ -7,6 +8,7 @@ from typing import List, Dict, ClassVar, Optional, Tuple
 import enum
 import json
 import difflib
+from abc import ABC, abstractmethod
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from browser_use.controller.registry.views import ActionModel
@@ -109,12 +111,18 @@ class Plan(BaseModel):
             repr += f"{i}) " + checkbox + "   " + plan.plan + "\n"
         return repr
 
-    def apply(self, ops):
+    def apply(self, ops: List["InteractionOp"]):
         for op in ops:
             op.op(self)
 
 
-class AddPlanItem(BaseModel):
+class InteractionOp(BaseModel, ABC):
+    @abstractmethod
+    def op(self, plan: Plan) -> Plan:
+        raise NotImplementedError
+
+
+class AddPlanItem(InteractionOp):
     plan_item: PlanItem
     index: int
 
@@ -134,8 +142,70 @@ class AddPlanItem(BaseModel):
         plan.plan_items.insert(self.index, self.plan_item)
         return plan
 
+
+class DeletePlanItem(InteractionOp):
+    index: int
+
+    model_schema: ClassVar[Dict] = {
+        "type": "object",
+        "schema": {
+            "type": "object",
+            "required": ["index"],
+            "properties": {
+                "index": {"type": "integer"}
+            }
+        }
+    }
+
+    def op(self, plan: Plan) -> Plan:
+        if 0 <= self.index < len(plan.plan_items):
+            plan.plan_items.pop(self.index)
+        return plan
+
+
 # TODO: figure out if its because items needs to not be a nested things
-class Operations(BaseModel):
+# class Operations(BaseModel):
+# 	operations: List[AddPlanItem | DeletePlanItem]
+
+# 	model_schema: ClassVar[Dict] = {
+# 		"type": "json_object",
+# 		"schema": {
+# 			"type": "object",
+# 			"required": ["operations"],
+# 			"properties": {
+# 				"operations": {
+# 					"type": "array",
+# 					# ⬇️ only the inner schema, no wrapper
+# 					"items": {
+#                         "oneOf": [
+#                             AddPlanItem.model_schema["schema"],
+#                             DeletePlanItem.model_schema["schema"],
+#                         ]
+#                     }
+# 				}
+# 			}
+# 		}
+# 	}
+
+class DeleteOperations(BaseModel):
+	operations: List[DeletePlanItem]
+
+	model_schema: ClassVar[Dict] = {
+		"type": "json_object",
+		"schema": {
+			"type": "object",
+			"required": ["operations"],
+			"properties": {
+				"operations": {
+					"type": "array",
+					"items": DeletePlanItem.model_schema["schema"]
+				}
+			}
+		}
+	}
+
+
+class AddOperations(BaseModel):
 	operations: List[AddPlanItem]
 
 	model_schema: ClassVar[Dict] = {
@@ -146,7 +216,6 @@ class Operations(BaseModel):
 			"properties": {
 				"operations": {
 					"type": "array",
-					# ⬇️ only the inner schema, no wrapper
 					"items": AddPlanItem.model_schema["schema"]
 				}
 			}
@@ -204,13 +273,13 @@ Formulate a plan for interacting with the visible elements on the page. You shou
 def update_plan_with_messages(
     llm: BaseChatModel,
     messages: List[Dict[str, str]], 
-) -> List[AddPlanItem]:
+) -> List[InteractionOp]:
     """Version of update_plan that takes messages directly instead of prompt args"""
     # logger.info(f"[PROMPT UPDATE PLAN]: \n{dump_llm_messages_pretty(messages)}")
 
-    res = llm.invoke(messages, response_format=Operations.model_schema)
+    res = llm.invoke(messages, response_format=AddOperations.model_schema)
     res = json.loads(res.content)
-    plan_ops = Operations(**res)
+    plan_ops = AddOperations(**res)
     
     # logger.info(f"[PLAN UPDATE] Added {len(plan_ops.operations)} plan items")
     # for op in plan_ops.operations:
@@ -249,7 +318,10 @@ Here is the current page:
 Here are the actions to affect this change:
 {eval_prev_goal}
 
-Return a list of plan-items to be added to the plan
+Some things to note:
+- be wary of re-adding existing plan-items to the plan even if the last action failed
+
+Return a list of plan-items to be added to the plan in json format
 """
     UPDATE_PLAN_PROMPT = PLAN_PREAMBLE + UPDATE_PLAN_PROMPT
     messages = [
@@ -261,9 +333,9 @@ Return a list of plan-items to be added to the plan
 
     logger.info(f"[PROMPT UPDATE PLAN]: \n{dump_llm_messages_pretty(messages)}")
 
-    res = llm.invoke(messages, response_format=Operations.model_schema)
+    res = llm.invoke(messages, response_format=AddOperations.model_schema)
     res = json.loads(res.content)
-    plan_ops = Operations(**res)
+    plan_ops = AddOperations(**res)
     
     logger.info(f"[PLAN UPDATE] Added {len(plan_ops.operations)} plan items")
     for op in plan_ops.operations:
@@ -443,4 +515,58 @@ Give your output as a list of completed plan item indices
     for idx in completed.completed:
         plan.plan_items[idx].completed = True
 
+    return plan
+
+# num of steps after to dedup
+DEDUP_AFTER_STEPS = 5
+
+@retry_sync(max_retries=3, exceptions=(Exception, ValueError), exc_class=EarlyShutdown)
+def deduplicate_plan_with_messages(
+    llm: BaseChatModel,
+    messages: List[Dict[str, str]], 
+) -> List[InteractionOp]:
+    """Version of deduplicate_plan that takes messages directly instead of prompt args"""
+    
+    res = llm.invoke(messages, response_format=DeleteOperations.model_schema)
+    res = json.loads(res.content)
+    plan_ops = DeleteOperations(**res)
+    
+    logger.info(f"[PLAN DEDUPLICATE] Removing {len(plan_ops.operations)} plan items")
+    for op in plan_ops.operations:
+        if isinstance(op, DeletePlanItem):
+            logger.info(f"[PLAN DEDUPLICATE] DeletePlanItem: index {op.index}")
+
+    return plan_ops.operations
+
+@retry_sync(max_retries=3, exceptions=(Exception, ValueError), exc_class=EarlyShutdown)
+def deduplicate_plan(llm: BaseChatModel, plan: Plan) -> Plan:
+    """Original deduplicate_plan that builds messages from args"""
+    PROMPT = f"""
+Here is a plan generated by a web agent:
+{plan}
+
+Your goal is to deduplicate the plan by removing any duplicate plan items.
+
+Return a list of delete operations to remove duplicate plan items in json format.
+Each delete operation should specify the index of the plan item to remove.
+"""
+    messages = [
+        {
+            "role": "user",
+            "content": PROMPT
+        },
+    ]
+
+    logger.info(f"[PROMPT DEDUPLICATE PLAN]: \n{dump_llm_messages_pretty(messages)}")
+
+    res = llm.invoke(messages, response_format=DeleteOperations.model_schema)
+    res = json.loads(res.content)
+    plan_ops = DeleteOperations(**res)
+    
+    logger.info(f"[PLAN DEDUPLICATE] Removing {len(plan_ops.operations)} plan items")
+    for op in plan_ops.operations:
+        if isinstance(op, DeletePlanItem):
+            logger.info(f"[PLAN DEDUPLICATE] DeletePlanItem: index {plan.plan_items[op.index].plan}")
+
+    plan.apply(plan_ops.operations)
     return plan

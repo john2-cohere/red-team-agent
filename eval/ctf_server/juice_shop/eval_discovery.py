@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 
 from eval.ctf_server.client import EvalClient
 from eval.challenges import DiscoveryChallenge, DiscoveryChallengeURL
@@ -84,11 +84,37 @@ class DiscoveryEvalClient(EvalClient[DiscoveryChallengeURL]):
         logger.info(f"[EVAL]: Unique pages visited: {len(unique_pages)} -> {unique_pages}")
         logger.info(f"[EVAL]: Unique subpages visited: {len(unique_subpages)} -> {unique_subpages}")
 
+    def get_agent_results(self) -> Dict:
+        unique_pages = list(set(self._agent_state.pages))
+        unique_subpages = list(set(page[2] for page in self._agent_state.subpages))
+        
+        # Count total and completed plans
+        total_plans = len(self._agent_state.plan.plan_items)
+        completed_plans = len([item for item in self._agent_state.plan.plan_items if item.completed])
+        
+        return {
+            "challenges": [vuln.name for vuln in self._targeted_vulns if vuln.solved],
+            "unique_pages": unique_pages,
+            "unique_subpages": unique_subpages,
+            "total_plans": total_plans,
+            "completed_plans": completed_plans,
+        }
+
 if __name__ == "__main__":
     import asyncio
     from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_URLS
 
-    max_steps = 100
+    max_steps = 5
 
-    eval_client = DiscoveryEvalClient(targeted_vulns=JUICESHOP_DISCOVERY_URLS)
-    asyncio.run(start_agent("discovery-agent", AGENT_PROMPT, eval_client=eval_client, max_steps=max_steps))
+    with open("results.txt", "w") as f:
+        for i in range(5):
+            eval_client = DiscoveryEvalClient(targeted_vulns=JUICESHOP_DISCOVERY_URLS)
+            results = asyncio.run(start_agent("discovery-agent", AGENT_PROMPT, eval_client=eval_client, max_steps=max_steps))
+            
+            f.write(f"___RUN {i} ___\n")
+            f.write(f"{len(results['challenges'])}\n")
+            f.write(f"unique_pages {results['unique_pages']}\n")
+            f.write(f"unique_subpages {results['unique_subpages']}\n")
+            f.write(f"total_plans {results['total_plans']}\n")
+            f.write(f"completed_plans {results['completed_plans']}\n")
+            f.write("___END___\n")

@@ -10,6 +10,7 @@ from src.agent.harness import AgentHarness
 from src.agent.custom_prompts import CustomAgentMessagePrompt
 
 from eval.ctf_server.client import EvalClient
+from src.llm_providers import llm_providers, LLMProviders
 
 logger = getLogger(__name__)
 
@@ -36,8 +37,10 @@ async def start_agent(
     """
     
     # Initialize LLM
-    llm = ChatCohere(model="command-a-03-2025", cohere_api_key=API_KEY)
-    
+    # llm = ChatCohere(model="command-a-03-2025", cohere_api_key=API_KEY)
+    # llm = LLM_PROVIDERS["cohere"]
+    llm = llm_providers
+
     # Browser configuration
     browser_profile = BrowserProfile(
         no_viewport=False,
@@ -64,19 +67,24 @@ async def start_agent(
     )
         
     try:
-        # Start and run the agent
-        await harness.start_all(max_steps=max_steps)
+        # HACK: when eval_client.max_steps == agent.max_steps, agent always terminates first instead
+        # whereas we want the eval_client to control termination
+        await harness.start_all(max_steps=max_steps + 5)
         
-        # TODO: currently only supports single agent for eval
         eval_client: EvalClient = shared_cfg.get("eval_client", None)
         if eval_client:
             agent = harness.get_agents()[0]
             eval_client.set_agent_state(agent.get_agent_state())
+            eval_client.set_max_steps(max_steps)
 
         await harness.wait()
-        
         logger.info("Agent task completed successfully")
         
+        if eval_client:
+            return eval_client.get_agent_results()
+        else:
+            return None
+                
     except Exception as e:
         logger.error(f"Error during agent execution: {e}")
         traceback.print_exc(file=sys.stderr)

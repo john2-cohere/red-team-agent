@@ -74,6 +74,8 @@ from .discovery import (
     generate_plan, 
     determine_new_page,
     check_plan_completion,
+    deduplicate_plan,
+    DEDUP_AFTER_STEPS,
     NewPageStatus, 
     NavigationPage,
     PLANNING_TASK_TEMPLATE,
@@ -451,7 +453,7 @@ class CustomAgent(Agent):
             self.homepage_url = cur_url
             self.homepage_contents = curr_page_contents
             self.state.pages.append(cur_url)
-            
+
             self.full_log(f"[PLAN] Generated plan: {curr_plan}")
             return new_task, None
         
@@ -465,6 +467,10 @@ class CustomAgent(Agent):
             curr_page_contents, 
             prev_goal
         )
+
+        if step_number > 1 and step_number % DEDUP_AFTER_STEPS == 0:
+            curr_plan = deduplicate_plan(self.llm, curr_plan)
+
         self.state.plan = curr_plan
         nav_page = determine_new_page(
             self.llm, 
@@ -513,7 +519,7 @@ class CustomAgent(Agent):
     @time_execution_async("--step")
     async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> bool:
         """Execute one step of the task"""
-        self.agent_log(f"##############[ Step {self.state.n_steps} ]##############")
+        self.agent_log(f"##############[ Step {step_info.step_number} ]##############")
         state = None
         model_output = None
         result: list[ActionResult] = []

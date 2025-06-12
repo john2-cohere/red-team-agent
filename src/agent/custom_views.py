@@ -58,7 +58,7 @@ class CustomAgentOutput(AgentOutput):
 
 class CustomAgentState(BaseModel):
     task: str
-    plan: Optional[str] = None
+    plan: Optional[Plan] = None
     last_action: List['ActionModel'] = Field(default_factory=list)
     last_result: List['ActionResult'] = Field(default_factory=list)
     prev_page_contents: Optional[str] = None

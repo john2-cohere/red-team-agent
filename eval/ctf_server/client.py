@@ -68,6 +68,10 @@ class EvalClient(Generic[ChallengeType]):
 
         return solved
 
+    def get_agent_results(self) -> Dict:
+        """Return the results of the agents execution"""
+        pass
+
     async def check_completion(
         self,
         http_msgs: List[HTTPMessage], 
@@ -86,6 +90,7 @@ class EvalClient(Generic[ChallengeType]):
     async def update_challenge_status(
         self,
         steps_taken: int,
+
         http_msgs: List[HTTPMessage],
         browser_actions: List[BrowserActions]
     ):
