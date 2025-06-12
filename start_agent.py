@@ -18,7 +18,7 @@ API_KEY = os.getenv("COHERE_API_KEY")
 
 async def start_agent(
         agent_name: str,
-        task: str, 
+        start_url: str,
         max_steps: int = 15, 
         headless: bool = False,
         **agent_args,
@@ -62,7 +62,7 @@ async def start_agent(
     # Create agent harness
     harness = AgentHarness(
         browser_profile_template=browser_profile,
-        agents_config=[{"task": task, "agent_client": None}],
+        agents_config=[{"start_url": start_url, "agent_client": None}],
         common_kwargs=shared_cfg,
     )
         

@@ -1,0 +1,35 @@
+___RUN 0 ___
+3
+unique_pages ['http://localhost:3000/#/', 'http://localhost:3000/#/contact']
+unique_subpages ['sidenav_expanded']
+total_plans 19
+completed_plans 2
+___END___
+___RUN 1 ___
+3
+unique_pages ['http://localhost:3000/#/']
+unique_subpages ['sidenav_expanded']
+total_plans 24
+completed_plans 1
+___END___
+___RUN 2 ___
+3
+unique_pages ['http://localhost:3000/#/']
+unique_subpages ['expanded_sidenav', 'tutorial_overlay']
+total_plans 20
+completed_plans 2
+___END___
+___RUN 3 ___
+3
+unique_pages ['http://localhost:3000/#/', 'http://localhost:3000/#/contact']
+unique_subpages ['expanded_sidenav']
+total_plans 19
+completed_plans 2
+___END___
+___RUN 4 ___
+3
+unique_pages ['http://localhost:3000/#/']
+unique_subpages ['sidenav_expanded']
+total_plans 25
+completed_plans 1
+___END___

@@ -100,21 +100,30 @@ class DiscoveryEvalClient(EvalClient[DiscoveryChallengeURL]):
             "completed_plans": completed_plans,
         }
 
+# if __name__ == "__main__":
+#     import asyncio
+#     from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_URLS
+
+#     max_steps = 5
+
+#     with open("results.txt", "w") as f:
+#         for i in range(5):
+#             eval_client = DiscoveryEvalClient(targeted_vulns=JUICESHOP_DISCOVERY_URLS)
+#             results = asyncio.run(start_agent("discovery-agent", AGENT_PROMPT, eval_client=eval_client, max_steps=max_steps))
+            
+#             f.write(f"___RUN {i} ___\n")
+#             f.write(f"{len(results['challenges'])}\n")
+#             f.write(f"unique_pages {results['unique_pages']}\n")
+#             f.write(f"unique_subpages {results['unique_subpages']}\n")
+#             f.write(f"total_plans {results['total_plans']}\n")
+#             f.write(f"completed_plans {results['completed_plans']}\n")
+#             f.write("___END___\n")
+
 if __name__ == "__main__":
     import asyncio
     from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_URLS
 
     max_steps = 5
 
-    with open("results.txt", "w") as f:
-        for i in range(5):
-            eval_client = DiscoveryEvalClient(targeted_vulns=JUICESHOP_DISCOVERY_URLS)
-            results = asyncio.run(start_agent("discovery-agent", AGENT_PROMPT, eval_client=eval_client, max_steps=max_steps))
-            
-            f.write(f"___RUN {i} ___\n")
-            f.write(f"{len(results['challenges'])}\n")
-            f.write(f"unique_pages {results['unique_pages']}\n")
-            f.write(f"unique_subpages {results['unique_subpages']}\n")
-            f.write(f"total_plans {results['total_plans']}\n")
-            f.write(f"completed_plans {results['completed_plans']}\n")
-            f.write("___END___\n")
+    eval_client = DiscoveryEvalClient(targeted_vulns=JUICESHOP_DISCOVERY_URLS)
+    results = asyncio.run(start_agent("discovery-agent", VULN_APP_URL, eval_client=eval_client, max_steps=max_steps))

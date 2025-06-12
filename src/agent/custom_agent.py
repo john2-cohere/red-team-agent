@@ -114,12 +114,34 @@ class LLMClients(str, Enum):
     DEEPSEEK = "deepseek"
     DEEPSEEK_REASONER = "deepseek_reasoner"
 
-# Planning Agent:
-# - need to detect when page has changed to
+class AgentMode(str, Enum):
+    NAVIGATION = "navigation"
+    TASK_EXECUTION = "task_execution"
+
+class NavigationException(Exception):
+    pass
+
+# CONCERN: currently, we should just go_to the page directly but we really should use interactions with the page
+# elements to perform the navigation, to preserve FE state
+# SOL: try using creating a navigation plan, overwrite all existing
+# TODO: for new pages, this prompt may require some preamble to close popups etc.
+# TODO: how to evaluate this over multiple steps?
+NAVIGATE_TO_PAGE_PROMPT = """
+You are a web agent. Your task is to navigate to the following page:
+{url}
+
+When evaluating the success of this task, be wary that due to redirects, the final URL may look different from the one you are given
+"""
+
+# Future Refactors:
+# - should make more obvious which state vars are stored in self.state vs self
+# - refactor idea:
+# --> make a function called execute_mode that is called by mode specific logic
+# --> tricky bit is doing the state updates around this work still
 class CustomAgent(Agent):
     def __init__(
         self,
-        task: str,
+        start_url: str,
         agent_name: str,
         llm: BaseChatModel,
         model_name: str = "command-a-03-2025",
@@ -188,7 +210,7 @@ class CustomAgent(Agent):
             raise Exception("Must initialize CustomAgent with HTTPHandler")
 
         super(CustomAgent, self).__init__(
-            task=task,
+            task="",
             llm=llm,
             browser=browser,
             browser_context=browser_context,
@@ -246,10 +268,10 @@ class CustomAgent(Agent):
         # username = self.agent_client.username if self.agent_client else "default"
         username = self.agent_name if self.agent_name else "default"
 
-        self.state = CustomAgentState(task=task)
+        self.state = CustomAgentState(task="")
         self.add_infos = add_infos
         self._message_manager = CustomMessageManager(
-            task=task,
+            task="",
             system_message=SystemPrompt(
                 action_description=self.unfiltered_actions,
                 max_actions_per_step=self.settings.max_actions_per_step,
@@ -266,9 +288,9 @@ class CustomAgent(Agent):
             ),
             state=self.state.message_manager_state,
         )
-
-        # State variables used for step()
         self.step_http_msgs = []
+        self.mode = AgentMode.NAVIGATION
+        self.state.pages = [start_url]
 
     def get_agent_state(self) -> CustomAgentState:
         return self.state
@@ -423,8 +445,6 @@ class CustomAgent(Agent):
             result[-1].extracted_content = self.state.extracted_content
             self.agent_log(f"📄 Result: {result[-1].extracted_content}")
 
-        self.state.consecutive_failures = 0
-
     async def create_or_update_plan(
         self,
         curr_page_contents: str,
@@ -437,14 +457,12 @@ class CustomAgent(Agent):
         eval_prev_goal = self.state.eval_prev_goal
         prev_goal = self.state.prev_goal
 
-        if step_number == 1:
+        # do nothing if we are in navigation mode
+        if self.mode == AgentMode.NAVIGATION:
             return self.state.task, None
 
-        # TODO: we should also detect *intentional* page navigation to reset the plan
-        # if no plan generate plan
-        # only generate plan once we have navigated to a page
-        # skip the browser intiializtion phase where the
-        if not curr_plan and curr_page_contents and not prev_page_contents:
+        # this should execute *only* after we transition from NAVIGATION -> TASK_EXECUTION
+        if not curr_plan and curr_page_contents:
             curr_plan = generate_plan(self.llm, curr_page_contents)
             self.state.plan = curr_plan
             new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
@@ -503,7 +521,7 @@ class CustomAgent(Agent):
             # TODO: explicitly tell it to use nested subplan structure
             # TODO: tell it to not to refer to interactive elements by their index
             curr_plan = update_plan(
-                self.llm, curr_page_contents, prev_page_contents, curr_plan, self.state.eval_prev_goal
+                self.llm, curr_page_contents, prev_page_contents, curr_plan, eval_prev_goal
             )
             self.state.plan = curr_plan
             new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
@@ -516,6 +534,39 @@ class CustomAgent(Agent):
             # return the old task
             return self.state.task, None
 
+    def handle_nav_mode_start(self):
+        """Handles when agent first navigates to a page"""
+        if not self.mode == AgentMode.NAVIGATION:
+            return
+
+        self.homepage_url = self.state.pages.pop()
+        self.state.task = NAVIGATE_TO_PAGE_PROMPT.format(url=self.homepage_url)
+    
+    def handle_nav_mode_end(self, curr_url: str, step_info: CustomAgentStepInfo):
+        """Handles when agent finishes navigating to a page"""
+        if not self.mode == AgentMode.NAVIGATION:
+            return
+    
+        TASKS_FAILED = ["Failed", "Unknown"]
+        TASKED_FAILED_STEP1 = ["Failed"]
+        task_failed = TASKS_FAILED if step_info.step_number > 2 else TASKED_FAILED_STEP1
+
+        curr_url = self.state.prev_url
+        page_contents = self.state.prev_page_contents
+        eval_prev_goal = self.state.eval_prev_goal
+
+        if any(task.lower() in eval_prev_goal.lower() for task in task_failed):
+            raise NavigationException(f"Failed to navigate to {curr_url}")
+
+        # if curr_url != self.homepage_url:
+        #     raise NavigationException(f"Failed to navigate to {self.homepage_url}")
+
+        self.mode = AgentMode.TASK_EXECUTION
+        self.homepage_url = curr_url
+        self.homepage_contents = page_contents
+        self.state.pages.append(curr_url)
+        self.state.plan = None
+
     @time_execution_async("--step")
     async def step(self, step_info: Optional[CustomAgentStepInfo] = None) -> bool:
         """Execute one step of the task"""
@@ -527,6 +578,8 @@ class CustomAgent(Agent):
         tokens = 0
         browser_actions: Optional[BrowserActions] = None
         early_shutdown = False
+    
+        self.agent_log(f"CONSECUTIVE FAILURES: {self.state.consecutive_failures}")
 
         try:
             # NOTE: this is state of the playwright browser, not to be confused with self.state
@@ -538,7 +591,8 @@ class CustomAgent(Agent):
 
             await self._raise_if_stopped_or_paused()
 
-            # TODO: should maybe move homepage init out of here?
+            self.handle_nav_mode_start()
+
             new_task, replace_task = await self.create_or_update_plan(
                 page_contents,
                 curr_url,
@@ -583,8 +637,8 @@ class CustomAgent(Agent):
                 )
                 raise e
 
+            new_url = (await self.browser_session.get_current_page()).url
             result: list[ActionResult] = await self.multi_act(model_output.action)
-
             http_msgs = await self.http_handler.flush()
             self.step_http_msgs = self.http_history.filter_http_messages(http_msgs)
             browser_actions = BrowserActions(
@@ -600,7 +654,7 @@ class CustomAgent(Agent):
                 model_output, 
                 step_info, 
                 page_contents, 
-                curr_url, 
+                new_url, 
                 model_output.current_state.next_goal
             )
             self._log_response(
@@ -608,8 +662,9 @@ class CustomAgent(Agent):
                 current_msg=input_messages[-1],
                 response=model_output,
                 curr_goal=self.state.prev_goal,
-                curr_url=curr_url,
+                curr_url=new_url,
             )
+            self.handle_nav_mode_end(new_url, step_info)
 
             # Match reference pattern for completion logging
             if len(result) > 0 and result[-1].is_done:
@@ -640,6 +695,16 @@ class CustomAgent(Agent):
             ]
             early_shutdown = True
             return early_shutdown
+        
+        except NavigationException as e:
+            self.agent_log(f"Navigation failed: {e}")
+            self.state.pages.insert(0, self.homepage_url)
+            self.state.task = None
+
+            self.homepage_url = ""
+            
+            result = await self._handle_step_error(e, step_info)
+            self.state.last_result = result
 
         except Exception as e:
             # Match reference pattern - handle step errors
@@ -677,7 +742,7 @@ class CustomAgent(Agent):
         error_msg = AgentError.format_error(error, include_trace=include_trace)
         prefix = f"❌ Result failed {self.state.consecutive_failures + 1}/{self.settings.max_failures} times:\n "
 
-        if isinstance(error, (ValidationError, ValueError)):
+        if isinstance(error, (ValidationError, ValueError, NavigationException)):
             self.full_log(f"{prefix}{error_msg}")
             if "Max token limit reached" in error_msg:
                 # cut tokens from history
