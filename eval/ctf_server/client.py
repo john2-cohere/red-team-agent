@@ -36,6 +36,12 @@ class EvalClient(Generic[ChallengeType]):
     def max_steps(self):
         return self._max_steps
 
+    def set_max_steps(self, max_steps: int) -> None:
+        """
+        Set the maximum number of steps for the eval.
+        """
+        self._max_steps = max_steps
+
     def set_shutdown(self, shutdown: Callable) -> None:
         """
         Set a shutdown function to be called when the agent is done.
