@@ -123,7 +123,16 @@ if __name__ == "__main__":
     import asyncio
     from eval.ctf_server.juice_shop.data import JUICESHOP_DISCOVERY_URLS
 
-    max_steps = 5
+    max_steps = 100
+    page_max_steps = 20
 
     eval_client = DiscoveryEvalClient(targeted_vulns=JUICESHOP_DISCOVERY_URLS)
-    results = asyncio.run(start_agent("discovery-agent", VULN_APP_URL, eval_client=eval_client, max_steps=max_steps))
+    results = asyncio.run(
+        start_agent(
+            "discovery-agent", 
+            VULN_APP_URL, 
+            eval_client=eval_client, 
+            max_steps=max_steps, 
+            page_max_steps=page_max_steps
+        )
+    )

@@ -12,6 +12,11 @@ class Challenge(BaseModel):
 class DiscoveryChallenge(Challenge):
     url: str
 
+class ExploitChallenge(Challenge):
+    url: str
+    prompt: str
+    success_condition: Optional[str]
+
 class DiscoveryChallengeURL(Challenge):
     url: str
     url_ids: List[int]
