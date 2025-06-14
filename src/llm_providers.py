@@ -1,6 +1,8 @@
 from langchain_cohere import ChatCohere
 from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
+from langchain_core.language_models.chat_models import BaseChatModel
+
 import os
 
 import logging
@@ -20,8 +22,15 @@ class LLMProviders:
         # Set default provider to the first one in the dictionary
         self.default_provider = next(iter(providers.keys()))
         self.default_client = providers[self.default_provider]
+
+    def set_default_provider(self, name):
+        """
+        Set the default provider to the given name.
+        """
+        self.default_provider = name
+        self.default_client = self.providers[name]
     
-    def get_client(self, name):
+    def get_client(self, name) -> BaseChatModel:
         """
         Get a specific LLM client by name.
         
@@ -34,6 +43,9 @@ class LLMProviders:
         Raises:
             KeyError: If provider name not found
         """
+        if name == "default":
+            return self.default_client
+
         if name not in self.providers:
             available = list(self.providers.keys())
             raise KeyError(f"Provider '{name}' not found. Available providers: {available}")
@@ -98,6 +110,8 @@ providers_dict = {
     "deepseek": deepseek_client,
     "deepseek_reasoner": deepseek_client_reasoner,
     "cohere_thinking": cohere_client_thinking,
+    "openai": openai_client,
 }
 
 llm_providers = LLMProviders(providers_dict)
+llm_providers.set_default_provider("cohere")

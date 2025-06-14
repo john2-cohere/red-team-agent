@@ -20,6 +20,7 @@ class CustomAgentStepInfo(AgentStepInfo):
     max_steps: int
     add_infos: str
     memory: str
+    page_steps: int
 
 class CustomAgentBrain(BaseModel):
     """Current state of the agent"""

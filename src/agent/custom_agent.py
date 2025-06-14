@@ -144,8 +144,9 @@ class CustomAgent(Agent):
         start_url: str,
         agent_name: str,
         llm: BaseChatModel,
+        page_max_steps: int = 100,
         model_name: str = "command-a-03-2025",
-        add_infos: str = "",
+        add_infos: str = "", 
         http_handler: HTTPHandler = None,
         # Optional parameters
         browser: Browser | None = None,
@@ -268,6 +269,7 @@ class CustomAgent(Agent):
         # username = self.agent_client.username if self.agent_client else "default"
         username = self.agent_name if self.agent_name else "default"
 
+        self.page_max_steps = page_max_steps
         self.state = CustomAgentState(task="")
         self.add_infos = add_infos
         self._message_manager = CustomMessageManager(
@@ -357,6 +359,7 @@ class CustomAgent(Agent):
             return
 
         step_info.step_number += 1
+        step_info.page_steps += 1
         # step_info.prev_url = curr_url
         # step_info.prev_page_contents = page_contents
         # important_contents = model_output.current_state.important_contents
@@ -382,7 +385,7 @@ class CustomAgent(Agent):
         ai_content = ai_message.content.replace("```json", "").replace("```", "")
         ai_content = repair_json(ai_content)
         parsed_json = json.loads(ai_content)
-        self.full_log(f"[PARSED]: {parsed_json}")
+        # self.full_log(f"[PARSED]: {parsed_json}")
 
         parsed: AgentOutput = self.AgentOutput(**parsed_json)
 
@@ -445,6 +448,7 @@ class CustomAgent(Agent):
             result[-1].extracted_content = self.state.extracted_content
             self.agent_log(f"📄 Result: {result[-1].extracted_content}")
 
+    # TODO: refactor make all plan update in-place
     async def create_or_update_plan(
         self,
         curr_page_contents: str,
@@ -527,7 +531,7 @@ class CustomAgent(Agent):
             new_task = PLANNING_TASK_TEMPLATE.format(plan=curr_plan)
             self.state.subpages.append((cur_url, curr_page_contents, nav_page.name))
 
-            self.agent_log(f"[PLAN] Updated plan: {curr_plan}")
+            # self.agent_log(f"[PLAN] Updated plan: {curr_plan}")
             return new_task, None
         else:
             self.agent_log("[PLAN]: No task updates")
@@ -539,7 +543,12 @@ class CustomAgent(Agent):
         if not self.mode == AgentMode.NAVIGATION:
             return
 
-        self.homepage_url = self.state.pages.pop()
+        if not self.state.pages:
+            raise EarlyShutdown(f"No pages left to navigate to")
+
+        next_page = self.state.pages.pop()
+        self.agent_log(f"Navigating to new page: {next_page}")
+        self.homepage_url = next_page
         self.state.task = NAVIGATE_TO_PAGE_PROMPT.format(url=self.homepage_url)
     
     def handle_nav_mode_end(self, curr_url: str, step_info: CustomAgentStepInfo):
@@ -579,8 +588,6 @@ class CustomAgent(Agent):
         browser_actions: Optional[BrowserActions] = None
         early_shutdown = False
     
-        self.agent_log(f"CONSECUTIVE FAILURES: {self.state.consecutive_failures}")
-
         try:
             # NOTE: this is state of the playwright browser, not to be confused with self.state
             # which represents state of the agent
@@ -599,6 +606,7 @@ class CustomAgent(Agent):
                 step_info.step_number
             )
             self.state.task = new_task
+            self.agent_log(f"[PLAN] New task: {self.state.plan}")
 
             self._message_manager.add_state_message(
                 state,
@@ -621,15 +629,10 @@ class CustomAgent(Agent):
                 # as chat history
                 self._message_manager._remove_last_state_message()
                 self._message_manager._add_message_with_tokens(output_msg)
-                self.full_log(f"MESSAGE_LEN: {len(input_messages)}")
-                for msg in input_messages:
-                    self.full_log(f"MESSAGE: {type(msg)}")
-
                 self.update_step_info(model_output, step_info, curr_url, page_contents)
                 # update the state
                 await self._raise_if_stopped_or_paused()
 
-                self.full_log(f"MESSAGE_LEN AFTER: {len(self._message_manager.get_messages())}")
             except Exception as e:
                 self._message_manager._remove_last_state_message()
                 self.full_log(
@@ -674,16 +677,19 @@ class CustomAgent(Agent):
                 self.agent_log(f"📄 Result: {result[-1].extracted_content}")
 
             self.state.consecutive_failures = 0
-            
-            # TODO: really bug here:
-            # - if replace
-            if replace_task:
-                self.state.task = replace_task
 
             if self.eval_client:
                 early_shutdown = await self.eval_client.update_challenge_status(
                     step_info.step_number, self.step_http_msgs, browser_actions
                 )
+            
+            # STATE TRANSITIONS
+            if replace_task:
+                self.state.task = replace_task
+                self.state.pages.append(new_url)
+
+            if step_info.page_steps > self.page_max_steps:
+                self.mode = AgentMode.NAVIGATION
 
         except (InterruptedError, EarlyShutdown):
             self.agent_log("Shutdown called by agent")
@@ -779,6 +785,7 @@ class CustomAgent(Agent):
                 step_number=1,
                 max_steps=max_steps,
                 memory="",
+                page_steps=0,
             )
 
             for step in range(max_steps):
@@ -862,19 +869,6 @@ class CustomAgent(Agent):
             errors = (history.errors() if history else []) + [f"Shutdown: {reason}"]
             input_tokens = history.total_input_tokens() if history else 0
             duration_seconds = history.total_duration_seconds() if history else 0.0
-
-            # self.telemetry.capture(
-            #     AgentEndTelemetryEvent(
-            #         agent_id=agent_id,
-            #         is_done=False, # Task was not completed normally
-            #         success=False, # Assume failure on shutdown
-            #         steps=steps,
-            #         max_steps_reached=False,
-            #         errors=errors,
-            #         total_input_tokens=input_tokens,
-            #         total_duration_seconds=duration_seconds,
-            #     )
-            # )
 
             # Save History
             if self.history_file and history:
